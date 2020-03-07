@@ -14,7 +14,7 @@ add_library(quickjs STATIC
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g -ggdb")
-set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -Wno-array-bounds -Wno-format-truncation")
+set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -Os -flto -Wno-array-bounds -Wno-format-truncation")
 
 file(STRINGS "${PROJECT_SOURCE_DIR}/VERSION" CONFIG_VERSION)
 target_compile_definitions(quickjs PRIVATE CONFIG_VERSION="${CONFIG_VERSION}")
