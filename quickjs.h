@@ -360,11 +360,8 @@ void JS_AddIntrinsicRegExpCompiler(JSContext *ctx);
 void JS_AddIntrinsicRegExp(JSContext *ctx);
 void JS_AddIntrinsicJSON(JSContext *ctx);
 void JS_AddIntrinsicProxy(JSContext *ctx);
-void JS_AddIntrinsicMapSet(JSContext *ctx);
 void JS_AddIntrinsicPromise(JSContext *ctx);
-void JS_AddIntrinsicBigInt(JSContext *ctx);
-void JS_AddIntrinsicBigFloat(JSContext *ctx);
-void JS_AddIntrinsicBigDecimal(JSContext *ctx);
+
 /* enable operator overloading */
 void JS_AddIntrinsicOperators(JSContext *ctx);
 /* enable "use math" */
