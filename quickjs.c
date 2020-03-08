@@ -245,7 +245,6 @@ typedef enum {
     JS_GC_OBJ_TYPE_FUNCTION_BYTECODE,
     JS_GC_OBJ_TYPE_SHAPE,
     JS_GC_OBJ_TYPE_VAR_REF,
-    JS_GC_OBJ_TYPE_ASYNC_FUNCTION,
 } JSGCObjectTypeEnum;
 
 /* header for GC objects. GC objects are C data structures with a
@@ -309,7 +308,6 @@ struct JSContext {
     JSValue promise_ctor;
     JSValue native_error_proto[JS_NATIVE_ERROR_COUNT];
     JSValue iterator_proto;
-    JSValue async_iterator_proto;
     JSValue array_proto_values;
     JSValue throw_type_error;
     JSValue eval_obj;
@@ -436,8 +434,7 @@ typedef struct JSVarDef {
 #define PC2LINE_DIFF_PC_MAX ((255 - PC2LINE_OP_FIRST) / PC2LINE_RANGE)
 
 typedef enum JSFunctionKindEnum {
-    JS_FUNC_NORMAL = 0,
-    JS_FUNC_ASYNC = (1 << 1),
+    JS_FUNC_NORMAL = 0
 } JSFunctionKindEnum;
 
 typedef struct JSFunctionBytecode {
@@ -504,22 +501,6 @@ typedef struct JSRegExp {
     JSString *pattern;
     JSString *bytecode; /* also contains the flags */
 } JSRegExp;
-
-typedef struct JSAsyncFunctionState {
-    JSValue this_val; /* 'this' generator argument */
-    int argc; /* number of function arguments */
-    BOOL throw_flag; /* used to throw an exception in JS_CallInternal() */
-    JSStackFrame frame;
-} JSAsyncFunctionState;
-
-/* XXX: could use an object instead to avoid the
-   JS_TAG_ASYNC_FUNCTION tag for the GC */
-typedef struct JSAsyncFunctionData {
-    JSGCObjectHeader header; /* must come first */
-    JSValue resolving_funcs[2];
-    BOOL is_active; /* true if the async function state is valid */
-    JSAsyncFunctionState func_state;
-} JSAsyncFunctionData;
 
 typedef enum {
    /* binary operators */
@@ -723,8 +704,6 @@ struct JSObject {
         struct JSRegExpStringIteratorData *regexp_string_iterator_data; /* JS_CLASS_REGEXP_STRING_ITERATOR */
         struct JSPromiseData *promise_data; /* JS_CLASS_PROMISE */
         struct JSPromiseFunctionData *promise_function_data; /* JS_CLASS_PROMISE_RESOLVE_FUNCTION, JS_CLASS_PROMISE_REJECT_FUNCTION */
-        struct JSAsyncFunctionData *async_function_data; /* JS_CLASS_ASYNC_FUNCTION_RESOLVE, JS_CLASS_ASYNC_FUNCTION_REJECT */
-        struct JSAsyncFromSyncIteratorData *async_from_sync_iterator_data; /* JS_CLASS_ASYNC_FROM_SYNC_ITERATOR */
         struct { /* JS_CLASS_BYTECODE_FUNCTION: 12/24 bytes */
             /* also used by JS_CLASS_GENERATOR_FUNCTION, JS_CLASS_ASYNC_FUNCTION and JS_CLASS_ASYNC_GENERATOR_FUNCTION */
             struct JSFunctionBytecode *function_bytecode;
@@ -904,9 +883,6 @@ static int JS_CreateProperty(JSContext *ctx, JSObject *p,
 static int js_string_memcmp(const JSString *p1, const JSString *p2, int len);
 static JSVarRef *get_var_ref(JSContext *ctx, JSStackFrame *sf, int var_idx,
                              BOOL is_arg);
-static void js_async_function_resolve_finalizer(JSRuntime *rt, JSValue val);
-static void js_async_function_resolve_mark(JSRuntime *rt, JSValueConst val,
-                                           JS_MarkFunc *mark_func);
 static JSValue JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
                                const char *input, size_t input_len,
                                const char *filename, int flags, int scope_idx);
@@ -932,8 +908,6 @@ static JSValue JS_ToNumberFree(JSContext *ctx, JSValue val);
 static int JS_GetOwnPropertyInternal(JSContext *ctx, JSPropertyDescriptor *desc,
                                      JSObject *p, JSAtom prop);
 static void js_free_desc(JSContext *ctx, JSPropertyDescriptor *desc);
-static void async_func_mark(JSRuntime *rt, JSAsyncFunctionState *s,
-                            JS_MarkFunc *mark_func);
 static void JS_AddIntrinsicBasicObjects(JSContext *ctx);
 static void js_free_shape(JSRuntime *rt, JSShape *sh);
 static void js_free_shape_null(JSRuntime *rt, JSShape *sh);
@@ -949,8 +923,6 @@ static JSValue *build_arg_list(JSContext *ctx, uint32_t *plen,
                                JSValueConst array_arg);
 static BOOL js_get_fast_array(JSContext *ctx, JSValueConst obj,
                               JSValue **arrpp, uint32_t *countp);
-static JSValue JS_CreateAsyncFromSyncIterator(JSContext *ctx,
-                                              JSValueConst sync_iter);
 static void js_c_function_data_finalizer(JSRuntime *rt, JSValue val);
 static void js_c_function_data_mark(JSRuntime *rt, JSValueConst val,
                                     JS_MarkFunc *mark_func);
@@ -961,7 +933,6 @@ static JSAtom js_symbol_to_atom(JSContext *ctx, JSValue val);
 static void add_gc_object(JSRuntime *rt, JSGCObjectHeader *h,
                           JSGCObjectTypeEnum type);
 static void remove_gc_object(JSGCObjectHeader *h);
-static void js_async_function_free0(JSRuntime *rt, JSAsyncFunctionData *s);
 
 static const JSClassExoticMethods js_arguments_exotic_methods;
 static const JSClassExoticMethods js_string_exotic_methods;
@@ -1821,7 +1792,6 @@ void JS_FreeContext(JSContext *ctx)
     }
     js_free_rt(rt, ctx->class_proto);
     JS_FreeValue(ctx, ctx->iterator_proto);
-    JS_FreeValue(ctx, ctx->async_iterator_proto);
     JS_FreeValue(ctx, ctx->promise_ctor);
     JS_FreeValue(ctx, ctx->regexp_ctor);
     JS_FreeValue(ctx, ctx->function_ctor);
@@ -4200,8 +4170,7 @@ static void js_function_set_properties(JSContext *ctx, JSValueConst func_obj,
 
 static BOOL js_class_has_bytecode(JSClassID class_id)
 {
-    return (class_id == JS_CLASS_BYTECODE_FUNCTION ||
-            class_id == JS_CLASS_ASYNC_FUNCTION);
+    return class_id == JS_CLASS_BYTECODE_FUNCTION;
 }
 
 /* return NULL without exception if not a function or no bytecode */
@@ -4844,15 +4813,6 @@ static void mark_children(JSRuntime *rt, JSGCObjectHeader *gp,
             JS_MarkValue(rt, *var_ref->pvalue, mark_func);
         }
         break;
-    case JS_GC_OBJ_TYPE_ASYNC_FUNCTION:
-        {
-            JSAsyncFunctionData *s = (JSAsyncFunctionData *)gp;
-            if (s->is_active)
-                async_func_mark(rt, &s->func_state, mark_func);
-            JS_MarkValue(rt, s->resolving_funcs[0], mark_func);
-            JS_MarkValue(rt, s->resolving_funcs[1], mark_func);
-        }
-        break;
     case JS_GC_OBJ_TYPE_SHAPE:
         {
             JSShape *sh = (JSShape *)gp;
@@ -4865,40 +4825,6 @@ static void mark_children(JSRuntime *rt, JSGCObjectHeader *gp,
         abort();
     }
 }
-
-#if 0
-/* not useful until realms are supported */
-static void mark_context(JSRuntime *rt, JSContext *ctx)
-{
-    int i;
-    struct list_head *el;
-
-    list_for_each(el, &ctx->loaded_modules) {
-        JSModuleDef *m = list_entry(el, JSModuleDef, link);
-        JS_MarkValue(rt, m->module_ns);
-        JS_MarkValue(rt, m->func_obj);
-    }
-
-    JS_MarkValue(rt, ctx->current_exception);
-
-    for(i = 0; i < rt->class_count; i++)
-        JS_MarkValue(rt, ctx->class_proto[i]);
-    JS_MarkValue(rt, ctx->regexp_ctor);
-    JS_MarkValue(rt, ctx->function_ctor);
-    JS_MarkValue(rt, ctx->function_proto);
-    JS_MarkValue(rt, ctx->iterator_proto);
-    JS_MarkValue(rt, ctx->async_iterator_proto);
-    JS_MarkValue(rt, ctx->array_proto_values);
-
-    for(i = 0; i < JS_NATIVE_ERROR_COUNT; i++)
-        JS_MarkValue(rt, ctx->native_error_proto[i]);
-
-    JS_MarkValue(rt, ctx->throw_type_error);
-    JS_MarkValue(rt, ctx->eval_obj);
-    JS_MarkValue(rt, ctx->global_obj);
-    JS_MarkValue(rt, ctx->global_var_obj);
-}
-#endif
 
 static void gc_decref_child(JSRuntime *rt, JSGCObjectHeader *p)
 {
@@ -5307,10 +5233,7 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
         case JS_CLASS_PROMISE:           /* u.promise_data */
         case JS_CLASS_PROMISE_RESOLVE_FUNCTION:  /* u.promise_function_data */
         case JS_CLASS_PROMISE_REJECT_FUNCTION:   /* u.promise_function_data */
-        case JS_CLASS_ASYNC_FUNCTION_RESOLVE:    /* u.async_function_data */
-        case JS_CLASS_ASYNC_FUNCTION_REJECT:     /* u.async_function_data */
-        case JS_CLASS_ASYNC_FROM_SYNC_ITERATOR:  /* u.async_from_sync_iterator_data */
-            /* TODO */
+        /* TODO */
         default:
             /* XXX: class definition should have an opaque block size */
             if (p->u.opaque) {
@@ -9965,9 +9888,6 @@ static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, JSGCObjectHeader *p)
         case JS_GC_OBJ_TYPE_VAR_REF:
             printf("[var_ref]");
             break;
-        case JS_GC_OBJ_TYPE_ASYNC_FUNCTION:
-            printf("[async_function]");
-            break;
         default:
             printf("[unknown %d]", p->gc_obj_type);
             break;
@@ -11040,31 +10960,13 @@ static JSValue JS_GetIterator2(JSContext *ctx, JSValueConst obj,
     return enum_obj;
 }
 
-static JSValue JS_GetIterator(JSContext *ctx, JSValueConst obj, BOOL is_async)
+static JSValue JS_GetIterator(JSContext *ctx, JSValueConst obj)
 {
-    JSValue method, ret, sync_iter;
+    JSValue method, ret;
 
-    if (is_async) {
-        method = JS_GetProperty(ctx, obj, JS_ATOM_Symbol_asyncIterator);
-        if (JS_IsException(method))
-            return method;
-        if (JS_IsUndefined(method) || JS_IsNull(method)) {
-            method = JS_GetProperty(ctx, obj, JS_ATOM_Symbol_iterator);
-            if (JS_IsException(method))
-                return method;
-            sync_iter = JS_GetIterator2(ctx, obj, method);
-            JS_FreeValue(ctx, method);
-            if (JS_IsException(sync_iter))
-                return sync_iter;
-            ret = JS_CreateAsyncFromSyncIterator(ctx, sync_iter);
-            JS_FreeValue(ctx, sync_iter);
-            return ret;
-        }
-    } else {
-        method = JS_GetProperty(ctx, obj, JS_ATOM_Symbol_iterator);
-        if (JS_IsException(method))
-            return method;
-    }
+    method = JS_GetProperty(ctx, obj, JS_ATOM_Symbol_iterator);
+    if (JS_IsException(method))
+        return method;
     if (!JS_IsFunction(ctx, method)) {
         JS_FreeValue(ctx, method);
         return JS_ThrowTypeError(ctx, "value is not iterable");
@@ -11187,12 +11089,11 @@ static int JS_IteratorClose(JSContext *ctx, JSValueConst enum_obj,
 }
 
 /* obj -> enum_rec (3 slots) */
-static __exception int js_for_of_start(JSContext *ctx, JSValue *sp,
-                                       BOOL is_async)
+static __exception int js_for_of_start(JSContext *ctx, JSValue *sp)
 {
     JSValue op1, obj, method;
     op1 = sp[-1];
-    obj = JS_GetIterator(ctx, op1, is_async);
+    obj = JS_GetIterator(ctx, op1);
     if (JS_IsException(obj))
         return -1;
     JS_FreeValue(ctx, op1);
@@ -11225,16 +11126,6 @@ static __exception int js_for_of_next(JSContext *ctx, JSValue *sp, int offset)
     }
     sp[0] = value;
     sp[1] = JS_NewBool(ctx, done);
-    return 0;
-}
-
-static __exception int js_for_await_of_next(JSContext *ctx, JSValue *sp)
-{
-    JSValue result;
-    result = JS_Call(ctx, sp[-2], sp[-3], 0, NULL);
-    if (JS_IsException(result))
-        return -1;
-    sp[0] = result;
     return 0;
 }
 
@@ -11361,7 +11252,7 @@ static __exception int js_append_enumerate(JSContext *ctx, JSValue *sp)
                                        JS_ITERATOR_KIND_VALUE);
     JS_FreeValue(ctx, iterator);
 
-    enumobj = JS_GetIterator(ctx, sp[-1], FALSE);
+    enumobj = JS_GetIterator(ctx, sp[-1]);
     if (JS_IsException(enumobj))
         return -1;
     method = JS_GetProperty(ctx, enumobj, JS_ATOM_next);
@@ -11571,8 +11462,7 @@ static JSValue js_closure(JSContext *ctx, JSValue bfunc,
     JSValue func_obj;
     JSAtom name_atom;
     static const uint16_t func_kind_to_class_id[] = {
-        [JS_FUNC_NORMAL] = JS_CLASS_BYTECODE_FUNCTION,
-        [JS_FUNC_ASYNC] = JS_CLASS_ASYNC_FUNCTION,
+        [JS_FUNC_NORMAL] = JS_CLASS_BYTECODE_FUNCTION
     };
 
     b = JS_VALUE_GET_PTR(bfunc);
@@ -11985,29 +11875,7 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
     if (js_poll_interrupts(ctx))
         return JS_EXCEPTION;
     if (unlikely(JS_VALUE_GET_TAG(func_obj) != JS_TAG_OBJECT)) {
-        if (flags & JS_CALL_FLAG_GENERATOR) {
-            JSAsyncFunctionState *s = JS_VALUE_GET_PTR(func_obj);
-            /* func_obj get contains a pointer to JSFuncAsyncState */
-            /* the stack frame is already allocated */
-            sf = &s->frame;
-            p = JS_VALUE_GET_OBJ(sf->cur_func);
-            b = p->u.func.function_bytecode;
-            var_refs = p->u.func.var_refs;
-            local_buf = arg_buf = sf->arg_buf;
-            var_buf = sf->var_buf;
-            stack_buf = sf->var_buf + b->var_count;
-            sp = sf->cur_sp;
-            sf->cur_sp = NULL; /* cur_sp is NULL if the function is running */
-            pc = sf->cur_pc;
-            sf->prev_frame = ctx->current_stack_frame;
-            ctx->current_stack_frame = sf;
-            if (s->throw_flag)
-                goto exception;
-            else
-                goto restart;
-        } else {
-            goto not_a_function;
-        }
+        goto not_a_function;
     }
     p = JS_VALUE_GET_OBJ(func_obj);
     if (unlikely(p->class_id != JS_CLASS_BYTECODE_FUNCTION)) {
@@ -13161,7 +13029,7 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
             sp += 2;
             BREAK;
         CASE(OP_for_of_start):
-            if (js_for_of_start(ctx, sp, FALSE))
+            if (js_for_of_start(ctx, sp))
                 goto exception;
             sp += 1;
             *sp++ = JS_NewCatchOffset(ctx, 0);
@@ -13174,17 +13042,6 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
                     goto exception;
                 sp += 2;
             }
-            BREAK;
-        CASE(OP_for_await_of_start):
-            if (js_for_of_start(ctx, sp, TRUE))
-                goto exception;
-            sp += 1;
-            *sp++ = JS_NewCatchOffset(ctx, 0);
-            BREAK;
-        CASE(OP_for_await_of_next):
-            if (js_for_await_of_next(ctx, sp))
-                goto exception;
-            sp += 1;
             BREAK;
         CASE(OP_iterator_get_value_done):
             if (js_iterator_get_value_done(ctx, sp))
@@ -13223,75 +13080,6 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
                 sp[-2] = sp[-3];
                 sp[-3] = ret_val;
                 sp++;
-            }
-            BREAK;
-
-        CASE(OP_async_iterator_close):
-            /* iter_obj next catch_offset -> value flag */
-            {
-                JSValue ret, method;
-                int ret_flag;
-                method = JS_GetProperty(ctx, sp[-3], JS_ATOM_return);
-                if (JS_IsException(method))
-                    goto exception;
-                if (JS_IsUndefined(method) || JS_IsNull(method)) {
-                    ret = JS_UNDEFINED;
-                    ret_flag = TRUE;
-                } else {
-                    ret = JS_CallFree(ctx, method, sp[-3], 0, NULL);
-                    if (JS_IsException(ret))
-                        goto exception;
-                    ret_flag = FALSE;
-                }
-                JS_FreeValue(ctx, sp[-3]);
-                JS_FreeValue(ctx, sp[-2]);
-                JS_FreeValue(ctx, sp[-1]);
-                sp[-3] = ret;
-                sp[-2] = JS_NewBool(ctx, ret_flag);
-                sp -= 1;
-            }
-            BREAK;
-
-        CASE(OP_async_iterator_next):
-            /* stack: iter_obj next catch_offset val */
-            {
-                JSValue ret;
-                ret = JS_Call(ctx, sp[-3], sp[-4],
-                              1, (JSValueConst *)(sp - 1));
-                if (JS_IsException(ret))
-                    goto exception;
-                JS_FreeValue(ctx, sp[-1]);
-                sp[-1] = ret;
-            }
-            BREAK;
-
-        CASE(OP_async_iterator_get):
-            /* stack: iter_obj next catch_offset val */
-            {
-                JSValue method, ret;
-                BOOL ret_flag;
-                int flags;
-                flags = *pc++;
-                if (flags == 2) {
-                    JS_ThrowTypeError(ctx, "iterator does not have a throw method");
-                    goto exception;
-                }
-                method = JS_GetProperty(ctx, sp[-4], flags ? JS_ATOM_throw : JS_ATOM_return);
-                if (JS_IsException(method))
-                    goto exception;
-                if (JS_IsUndefined(method) || JS_IsNull(method)) {
-                    ret_flag = TRUE;
-                } else {
-                    ret = JS_CallFree(ctx, method, sp[-4],
-                                      1, (JSValueConst *)(sp - 1));
-                    if (JS_IsException(ret))
-                        goto exception;
-                    JS_FreeValue(ctx, sp[-1]);
-                    sp[-1] = ret;
-                    ret_flag = FALSE;
-                }
-                sp[0] = JS_NewBool(ctx, ret_flag);
-                sp += 1;
             }
             BREAK;
 
@@ -14314,21 +14102,6 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
             }
             BREAK;
 
-        CASE(OP_await):
-            ret_val = JS_NewInt32(ctx, FUNC_RET_AWAIT);
-            goto done_generator;
-        CASE(OP_yield):
-            ret_val = JS_NewInt32(ctx, FUNC_RET_YIELD);
-            goto done_generator;
-        CASE(OP_yield_star):
-        CASE(OP_async_yield_star):
-            ret_val = JS_NewInt32(ctx, FUNC_RET_YIELD_STAR);
-            goto done_generator;
-        CASE(OP_return_async):
-        CASE(OP_initial_yield):
-            ret_val = JS_UNDEFINED;
-            goto done_generator;
-
         CASE(OP_nop):
             BREAK;
         CASE(OP_is_undefined_or_null):
@@ -14403,23 +14176,14 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
         }
     }
     ret_val = JS_EXCEPTION;
-    /* the local variables are freed by the caller in the generator
-       case. Hence the label 'done' should never be reached in a
-       generator function. */
-    if (b->func_kind != JS_FUNC_NORMAL) {
-    done_generator:
-        sf->cur_pc = pc;
-        sf->cur_sp = sp;
-    } else {
-    done:
-        if (unlikely(!list_empty(&sf->var_ref_list))) {
-            /* variable references reference the stack: must close them */
-            close_var_refs(ctx->rt, sf);
-        }
-        /* free the local variables and stack */
-        for(pval = local_buf; pval < sp; pval++) {
-            JS_FreeValue(ctx, *pval);
-        }
+done:
+    if (unlikely(!list_empty(&sf->var_ref_list))) {
+        /* variable references reference the stack: must close them */
+        close_var_refs(ctx->rt, sf);
+    }
+    /* free the local variables and stack */
+    for(pval = local_buf; pval < sp; pval++) {
+        JS_FreeValue(ctx, *pval);
     }
     ctx->current_stack_frame = sf->prev_frame;
     return ret_val;
@@ -14558,283 +14322,6 @@ static JSValue JS_InvokeFree(JSContext *ctx, JSValue this_val, JSAtom atom,
     JSValue res = JS_Invoke(ctx, this_val, atom, argc, argv);
     JS_FreeValue(ctx, this_val);
     return res;
-}
-
-/* JSAsyncFunctionState (used by generator and async functions) */
-static __exception int async_func_init(JSContext *ctx, JSAsyncFunctionState *s,
-                                       JSValueConst func_obj, JSValueConst this_obj,
-                                       int argc, JSValueConst *argv)
-{
-    JSObject *p;
-    JSFunctionBytecode *b;
-    JSStackFrame *sf;
-    int local_count, i, arg_buf_len, n;
-
-    sf = &s->frame;
-    init_list_head(&sf->var_ref_list);
-    p = JS_VALUE_GET_OBJ(func_obj);
-    b = p->u.func.function_bytecode;
-    sf->js_mode = b->js_mode;
-    sf->cur_pc = b->byte_code_buf;
-    arg_buf_len = max_int(b->arg_count, argc);
-    local_count = arg_buf_len + b->var_count + b->stack_size;
-    sf->arg_buf = js_malloc(ctx, sizeof(JSValue) * max_int(local_count, 1));
-    if (!sf->arg_buf)
-        return -1;
-    sf->cur_func = JS_DupValue(ctx, func_obj);
-    s->this_val = JS_DupValue(ctx, this_obj);
-    s->argc = argc;
-    sf->arg_count = arg_buf_len;
-    sf->var_buf = sf->arg_buf + arg_buf_len;
-    sf->cur_sp = sf->var_buf + b->var_count;
-    for(i = 0; i < argc; i++)
-        sf->arg_buf[i] = JS_DupValue(ctx, argv[i]);
-    n = arg_buf_len + b->var_count;
-    for(i = argc; i < n; i++)
-        sf->arg_buf[i] = JS_UNDEFINED;
-    return 0;
-}
-
-static void async_func_mark(JSRuntime *rt, JSAsyncFunctionState *s,
-                            JS_MarkFunc *mark_func)
-{
-    JSStackFrame *sf;
-    JSValue *sp;
-
-    sf = &s->frame;
-    JS_MarkValue(rt, sf->cur_func, mark_func);
-    JS_MarkValue(rt, s->this_val, mark_func);
-    if (sf->cur_sp) {
-        /* if the function is running, cur_sp is not known so we
-           cannot mark the stack. Marking the variables is not needed
-           because a running function cannot be part of a removable
-           cycle */
-        for(sp = sf->arg_buf; sp < sf->cur_sp; sp++)
-            JS_MarkValue(rt, *sp, mark_func);
-    }
-}
-
-static void async_func_free(JSRuntime *rt, JSAsyncFunctionState *s)
-{
-    JSStackFrame *sf;
-    JSValue *sp;
-
-    sf = &s->frame;
-
-    /* close the closure variables. */
-    close_var_refs(rt, sf);
-    
-    if (sf->arg_buf) {
-        /* cannot free the function if it is running */
-        assert(sf->cur_sp != NULL);
-        for(sp = sf->arg_buf; sp < sf->cur_sp; sp++) {
-            JS_FreeValueRT(rt, *sp);
-        }
-        js_free_rt(rt, sf->arg_buf);
-    }
-    JS_FreeValueRT(rt, sf->cur_func);
-    JS_FreeValueRT(rt, s->this_val);
-}
-
-static JSValue async_func_resume(JSContext *ctx, JSAsyncFunctionState *s)
-{
-    JSValue func_obj;
-
-    /* the tag does not matter provided it is not an object */
-    func_obj = JS_MKPTR(JS_TAG_INT, s);
-    return JS_CallInternal(ctx, func_obj, s->this_val, JS_UNDEFINED,
-                           s->argc, s->frame.arg_buf, JS_CALL_FLAG_GENERATOR);
-}
-
-/* XXX: use enum */
-#define GEN_MAGIC_NEXT   0
-#define GEN_MAGIC_RETURN 1
-#define GEN_MAGIC_THROW  2
-
-/* AsyncFunction */
-
-static void js_async_function_terminate(JSRuntime *rt, JSAsyncFunctionData *s)
-{
-    if (s->is_active) {
-        async_func_free(rt, &s->func_state);
-        s->is_active = FALSE;
-    }
-}
-
-static void js_async_function_free0(JSRuntime *rt, JSAsyncFunctionData *s)
-{
-    js_async_function_terminate(rt, s);
-    JS_FreeValueRT(rt, s->resolving_funcs[0]);
-    JS_FreeValueRT(rt, s->resolving_funcs[1]);
-    remove_gc_object(&s->header);
-    js_free_rt(rt, s);
-}
-
-static void js_async_function_free(JSRuntime *rt, JSAsyncFunctionData *s)
-{
-    if (--s->header.ref_count == 0) {
-        js_async_function_free0(rt, s);
-    }
-}
-
-static void js_async_function_resolve_finalizer(JSRuntime *rt, JSValue val)
-{
-    JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSAsyncFunctionData *s = p->u.async_function_data;
-    if (s) {
-        js_async_function_free(rt, s);
-    }
-}
-
-static void js_async_function_resolve_mark(JSRuntime *rt, JSValueConst val,
-                                           JS_MarkFunc *mark_func)
-{
-    JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSAsyncFunctionData *s = p->u.async_function_data;
-    if (s) {
-        mark_func(rt, &s->header);
-    }
-}
-
-static int js_async_function_resolve_create(JSContext *ctx,
-                                            JSAsyncFunctionData *s,
-                                            JSValue *resolving_funcs)
-{
-    int i;
-    JSObject *p;
-
-    for(i = 0; i < 2; i++) {
-        resolving_funcs[i] =
-            JS_NewObjectProtoClass(ctx, ctx->function_proto,
-                                   JS_CLASS_ASYNC_FUNCTION_RESOLVE + i);
-        if (JS_IsException(resolving_funcs[i])) {
-            if (i == 1)
-                JS_FreeValue(ctx, resolving_funcs[0]);
-            return -1;
-        }
-        p = JS_VALUE_GET_OBJ(resolving_funcs[i]);
-        s->header.ref_count++;
-        p->u.async_function_data = s;
-    }
-    return 0;
-}
-
-static void js_async_function_resume(JSContext *ctx, JSAsyncFunctionData *s)
-{
-    JSValue func_ret, ret2;
-
-    func_ret = async_func_resume(ctx, &s->func_state);
-    if (JS_IsException(func_ret)) {
-        JSValue error;
-    fail:
-        error = JS_GetException(ctx);
-        ret2 = JS_Call(ctx, s->resolving_funcs[1], JS_UNDEFINED,
-                       1, (JSValueConst *)&error);
-        JS_FreeValue(ctx, error);
-        js_async_function_terminate(ctx->rt, s);
-        JS_FreeValue(ctx, ret2); /* XXX: what to do if exception ? */
-    } else {
-        JSValue value;
-        value = s->func_state.frame.cur_sp[-1];
-        s->func_state.frame.cur_sp[-1] = JS_UNDEFINED;
-        if (JS_IsUndefined(func_ret)) {
-            /* function returned */
-            ret2 = JS_Call(ctx, s->resolving_funcs[0], JS_UNDEFINED,
-                           1, (JSValueConst *)&value);
-            JS_FreeValue(ctx, ret2); /* XXX: what to do if exception ? */
-            JS_FreeValue(ctx, value);
-            js_async_function_terminate(ctx->rt, s);
-        } else {
-            JSValue promise, resolving_funcs[2], resolving_funcs1[2];
-            int i, res;
-
-            /* await */
-            JS_FreeValue(ctx, func_ret); /* not used */
-            promise = js_promise_resolve(ctx, ctx->promise_ctor,
-                                         1, (JSValueConst *)&value, 0);
-            JS_FreeValue(ctx, value);
-            if (JS_IsException(promise))
-                goto fail;
-            if (js_async_function_resolve_create(ctx, s, resolving_funcs)) {
-                JS_FreeValue(ctx, promise);
-                goto fail;
-            }
-
-            /* Note: no need to create 'thrownawayCapability' as in
-               the spec */
-            for(i = 0; i < 2; i++)
-                resolving_funcs1[i] = JS_UNDEFINED;
-            res = perform_promise_then(ctx, promise,
-                                       (JSValueConst *)resolving_funcs,
-                                       (JSValueConst *)resolving_funcs1);
-            JS_FreeValue(ctx, promise);
-            for(i = 0; i < 2; i++)
-                JS_FreeValue(ctx, resolving_funcs[i]);
-            if (res)
-                goto fail;
-        }
-    }
-}
-
-static JSValue js_async_function_resolve_call(JSContext *ctx,
-                                              JSValueConst func_obj,
-                                              JSValueConst this_obj,
-                                              int argc, JSValueConst *argv,
-                                              int flags)
-{
-    JSObject *p = JS_VALUE_GET_OBJ(func_obj);
-    JSAsyncFunctionData *s = p->u.async_function_data;
-    BOOL is_reject = p->class_id - JS_CLASS_ASYNC_FUNCTION_RESOLVE;
-    JSValueConst arg;
-
-    if (argc > 0)
-        arg = argv[0];
-    else
-        arg = JS_UNDEFINED;
-    s->func_state.throw_flag = is_reject;
-    if (is_reject) {
-        JS_Throw(ctx, JS_DupValue(ctx, arg));
-    } else {
-        /* return value of await */
-        s->func_state.frame.cur_sp[-1] = JS_DupValue(ctx, arg);
-    }
-    js_async_function_resume(ctx, s);
-    return JS_UNDEFINED;
-}
-
-static JSValue js_async_function_call(JSContext *ctx, JSValueConst func_obj,
-                                      JSValueConst this_obj,
-                                      int argc, JSValueConst *argv, int flags)
-{
-    JSValue promise;
-    JSAsyncFunctionData *s;
-
-    s = js_mallocz(ctx, sizeof(*s));
-    if (!s)
-        return JS_EXCEPTION;
-    s->header.ref_count = 1;
-    add_gc_object(ctx->rt, &s->header, JS_GC_OBJ_TYPE_ASYNC_FUNCTION);
-    s->is_active = FALSE;
-    s->resolving_funcs[0] = JS_UNDEFINED;
-    s->resolving_funcs[1] = JS_UNDEFINED;
-
-    promise = JS_NewPromiseCapability(ctx, s->resolving_funcs);
-    if (JS_IsException(promise))
-        goto fail;
-
-    if (async_func_init(ctx, &s->func_state, func_obj, this_obj, argc, argv)) {
-    fail:
-        JS_FreeValue(ctx, promise);
-        js_async_function_free(ctx->rt, s);
-        return JS_EXCEPTION;
-    }
-    s->is_active = TRUE;
-
-    js_async_function_resume(ctx, s);
-
-    js_async_function_free(ctx->rt, s);
-
-    return promise;
 }
 
 /* JS parser */
@@ -15792,21 +15279,14 @@ static __exception int next_token(JSParseState *s)
         s->token.u.ident.is_reserved = FALSE;
         if (s->token.u.ident.atom <= JS_ATOM_LAST_KEYWORD ||
             (s->token.u.ident.atom <= JS_ATOM_LAST_STRICT_KEYWORD &&
-             s->cur_func && (s->cur_func->js_mode & JS_MODE_STRICT)) ||
-            (s->token.u.ident.atom == JS_ATOM_await &&
-             (s->is_module ||
-              (s->cur_func &&
-               ((s->cur_func->func_kind & JS_FUNC_ASYNC) ||
-                (s->cur_func->func_type == JS_PARSE_FUNC_ARROW &&
-                 !s->cur_func->in_function_body && s->cur_func->parent &&
-                 (s->cur_func->parent->func_kind & JS_FUNC_ASYNC))))))) {
-                  if (ident_has_escape) {
-                      s->token.u.ident.is_reserved = TRUE;
-                      s->token.val = TOK_IDENT;
-                  } else {
-                      /* The keywords atoms are pre allocated */
-                      s->token.val = s->token.u.ident.atom - 1 + TOK_FIRST_KEYWORD;
-                  }
+            s->cur_func && (s->cur_func->js_mode & JS_MODE_STRICT))) {
+              if (ident_has_escape) {
+                  s->token.u.ident.is_reserved = TRUE;
+                  s->token.val = TOK_IDENT;
+              } else {
+                  /* The keywords atoms are pre allocated */
+                  s->token.val = s->token.u.ident.atom - 1 + TOK_FIRST_KEYWORD;
+              }
         } else {
             s->token.val = TOK_IDENT;
         }
@@ -16230,7 +15710,6 @@ static BOOL js_is_live_code(JSParseState *s) {
     case OP_tail_call_method:
     case OP_return:
     case OP_return_undef:
-    case OP_return_async:
     case OP_throw:
     case OP_throw_var:
     case OP_goto:
@@ -16998,7 +16477,6 @@ static __exception int js_parse_template(JSParseState *s, int call, int *argc)
 #define PROP_TYPE_VAR   1
 #define PROP_TYPE_GET   2
 #define PROP_TYPE_SET   3
-#define PROP_TYPE_ASYNC 5
 
 #define PROP_TYPE_PRIVATE (1 << 4)
 
@@ -17036,18 +16514,6 @@ static int __exception js_parse_property_name(JSParseState *s,
             }
             prop_type = PROP_TYPE_GET + (name == JS_ATOM_set);
             JS_FreeAtom(s->ctx, name);
-        } else if (token_is_pseudo_keyword(s, JS_ATOM_async) &&
-                   peek_token(s, TRUE) != '\n') {
-            name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
-            if (next_token(s))
-                goto fail1;
-            if (s->token.val == ':' || s->token.val == ',' ||
-                s->token.val == '}' || s->token.val == '(') {
-                is_non_reserved_ident = TRUE;
-                goto ident_found;
-            }
-            JS_FreeAtom(s->ctx, name);
-            prop_type = PROP_TYPE_ASYNC;
         }
     }
 
@@ -17363,8 +16829,6 @@ static __exception int js_parse_object_literal(JSParseState *s)
                 func_type = JS_PARSE_FUNC_GETTER + prop_type - PROP_TYPE_GET;
             } else {
                 func_type = JS_PARSE_FUNC_METHOD;
-                if (prop_type == PROP_TYPE_ASYNC)
-                    func_kind = JS_FUNC_ASYNC;
             }
             if (js_parse_function_decl(s, func_type, func_kind, JS_ATOM_NULL,
                                        start_ptr, start_line))
@@ -17850,9 +17314,7 @@ static __exception int js_parse_class(JSParseState *s, BOOL is_class_expr,
             
             func_type = JS_PARSE_FUNC_METHOD;
             func_kind = JS_FUNC_NORMAL;
-            if (prop_type == PROP_TYPE_ASYNC) {
-                func_kind = JS_FUNC_ASYNC;
-            } else if (name == JS_ATOM_constructor && !is_static) {
+            if (name == JS_ATOM_constructor && !is_static) {
                 if (ctor_fd) {
                     js_parse_error(s, "property constructor appears more than once");
                     goto fail;
@@ -19059,32 +18521,6 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
                                            JS_FUNC_NORMAL, JS_ATOM_NULL,
                                            s->token.ptr, s->token.line_num))
                     return -1;
-            } else if (token_is_pseudo_keyword(s, JS_ATOM_async) &&
-                       peek_token(s, TRUE) != '\n') {
-                const uint8_t *source_ptr;
-                int source_line_num;
-
-                source_ptr = s->token.ptr;
-                source_line_num = s->token.line_num;
-                if (next_token(s))
-                    return -1;
-                if (s->token.val == TOK_FUNCTION) {
-                    if (js_parse_function_decl(s, JS_PARSE_FUNC_EXPR,
-                                               JS_FUNC_ASYNC, JS_ATOM_NULL,
-                                               source_ptr, source_line_num))
-                        return -1;
-                } else if ((s->token.val == '(' &&
-                            js_parse_skip_parens_token(s, NULL, TRUE) == TOK_ARROW) ||
-                           (s->token.val == TOK_IDENT && !s->token.u.ident.is_reserved &&
-                            peek_token(s, TRUE) == TOK_ARROW)) {
-                    if (js_parse_function_decl(s, JS_PARSE_FUNC_ARROW,
-                                               JS_FUNC_ASYNC, JS_ATOM_NULL,
-                                               source_ptr, source_line_num))
-                        return -1;
-                } else {
-                    name = JS_DupAtom(s->ctx, JS_ATOM_async);
-                    goto do_get_var;
-                }
             } else {
                 if (s->token.u.ident.atom == JS_ATOM_arguments &&
                     !s->cur_func->arguments_allowed) {
@@ -19094,7 +18530,6 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
                 name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
                 if (next_token(s))  /* update line number before emitting code */
                     return -1;
-            do_get_var:
                 emit_op(s, OP_scope_get_var);
                 emit_u32(s, name);
                 emit_u16(s, s->cur_func->scope_level);
@@ -19670,18 +19105,6 @@ static __exception int js_parse_unary(JSParseState *s, int exponentiation_flag)
             return -1;
         exponentiation_flag = 0;
         break;
-    case TOK_AWAIT:
-        if (!(s->cur_func->func_kind & JS_FUNC_ASYNC))
-            return js_parse_error(s, "unexpected 'await' keyword");
-        if (!s->cur_func->in_function_body)
-            return js_parse_error(s, "await in default expression");
-        if (next_token(s))
-            return -1;
-        if (js_parse_unary(s, -1))
-            return -1;
-        emit_op(s, OP_await);
-        exponentiation_flag = 0;
-        break;
     default:
         if (js_parse_postfix_expr(s, TRUE))
             return -1;
@@ -20161,11 +19584,6 @@ static void emit_return(JSParseState *s, BOOL hasval)
 
         emit_label(s, label_return);
         emit_op(s, OP_return);
-    } else if (s->cur_func->func_kind != JS_FUNC_NORMAL) {
-        if (!hasval) {
-            emit_op(s, OP_undefined);
-        }
-        emit_op(s, OP_return_async);
     } else {
         emit_op(s, hasval ? OP_return : OP_return_undef);
     }
@@ -20326,9 +19744,7 @@ static int is_let(JSParseState *s, int decl_mask)
             }
             if (s->token.val == '{' ||
                 (s->token.val == TOK_IDENT && !s->token.u.ident.is_reserved) ||
-                s->token.val == TOK_LET ||
-                s->token.val == TOK_YIELD ||
-                s->token.val == TOK_AWAIT) {
+                s->token.val == TOK_LET) {
                 /* Check for possible ASI if not scanning for Declaration */
                 /* XXX: should also check that `{` introduces a BindingPattern,
                    but Firefox does not and rejects eval("let=1;let\n{if(1)2;}") */
@@ -20355,8 +19771,7 @@ static int is_let(JSParseState *s, int decl_mask)
 
 /* XXX: handle IteratorClose when exiting the loop before the
    enumeration is done */
-static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
-                                          BOOL is_async)
+static __exception int js_parse_for_in_of(JSParseState *s, int label_name)
 {
     JSContext *ctx = s->ctx;
     JSFunctionDef *fd = s->cur_func;
@@ -20491,8 +19906,6 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
         if (has_initializer)
             goto initializer_error;
     } else if (s->token.val == TOK_IN) {
-        if (is_async)
-            return js_parse_error(s, "'for await' loop should be used with 'of'");
         if (has_initializer &&
             (tok != TOK_VAR || (fd->js_mode & JS_MODE_STRICT) ||
              has_destructuring)) {
@@ -20516,10 +19929,7 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
        the TDZ values are in the closures */
     close_scopes(s, s->cur_func->scope_level, block_scope_level);
     if (is_for_of) {
-        if (is_async)
-            emit_op(s, OP_for_await_of_start);
-        else
-            emit_op(s, OP_for_of_start);
+        emit_op(s, OP_for_of_start);
         /* on stack: enum_rec */
     } else {
         emit_op(s, OP_for_in_start);
@@ -20557,17 +19967,8 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
 
     emit_label(s, label_cont);
     if (is_for_of) {
-        if (is_async) {
-            /* call the next method */
-            emit_op(s, OP_for_await_of_next);
-            /* get the result of the promise */
-            emit_op(s, OP_await);
-            /* unwrap the value and done values */
-            emit_op(s, OP_iterator_get_value_done);
-        } else {
-            emit_op(s, OP_for_of_next);
-            emit_u8(s, 0);
-        }
+        emit_op(s, OP_for_of_next);
+        emit_u8(s, 0);
     } else {
         emit_op(s, OP_for_in_next);
     }
@@ -20807,31 +20208,21 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             int pos_cont, pos_body, block_scope_level;
             BlockEnv break_entry;
             int tok, bits;
-            BOOL is_async;
 
             if (next_token(s))
                 goto fail;
 
             set_eval_ret_undefined(s);
             bits = 0;
-            is_async = FALSE;
             if (s->token.val == '(') {
                 js_parse_skip_parens_token(s, &bits, FALSE);
-            } else if (s->token.val == TOK_AWAIT) {
-                if (!(s->cur_func->func_kind & JS_FUNC_ASYNC)) {
-                    js_parse_error(s, "for await is only valid in asynchronous functions");
-                    goto fail;
-                }
-                is_async = TRUE;
-                if (next_token(s))
-                    goto fail;
             }
             if (js_parse_expect(s, '('))
                 goto fail;
 
             if (!(bits & SKIP_HAS_SEMI)) {
                 /* parse for/in or for/of */
-                if (js_parse_for_in_of(s, label_name, is_async))
+                if (js_parse_for_in_of(s, label_name))
                     goto fail;
                 break;
             }
@@ -21238,11 +20629,15 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
         break;
     case TOK_FUNCTION:
         /* ES6 Annex B.3.2 and B.3.3 semantics */
-        if (!(decl_mask & DECL_MASK_FUNC))
-            goto func_decl_error;
-        if (!(decl_mask & DECL_MASK_OTHER) && peek_token(s, FALSE) == '*')
-            goto func_decl_error;
-        goto parse_func_var;
+        if (!(decl_mask & DECL_MASK_FUNC)) {
+            js_parse_error(s, "function declarations can't appear in single-statement context");
+            goto fail;
+        }
+        if (js_parse_function_decl(s, JS_PARSE_FUNC_VAR,
+                                       JS_FUNC_NORMAL, JS_ATOM_NULL,
+                                       s->token.ptr, s->token.line_num))
+            goto fail;
+        break;
     case TOK_IDENT:
         if (s->token.u.ident.is_reserved) {
             js_parse_error_reserved_identifier(s);
@@ -21257,20 +20652,6 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             break;
         default:
             goto fail;
-        }
-        if (token_is_pseudo_keyword(s, JS_ATOM_async) &&
-            peek_token(s, TRUE) == TOK_FUNCTION) {
-            if (!(decl_mask & DECL_MASK_OTHER)) {
-            func_decl_error:
-                js_parse_error(s, "function declarations can't appear in single-statement context");
-                goto fail;
-            }
-        parse_func_var:
-            if (js_parse_function_decl(s, JS_PARSE_FUNC_VAR,
-                                       JS_FUNC_NORMAL, JS_ATOM_NULL,
-                                       s->token.ptr, s->token.line_num))
-                goto fail;
-            break;
         }
         goto hasexpr;
 
@@ -25631,7 +25012,6 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
 
         case OP_return:
         case OP_return_undef:
-        case OP_return_async:
         case OP_throw:
         case OP_throw_var:
             pos_next = skip_dead_code(s, bc_buf, bc_len, pos_next, &line_num);
@@ -26441,7 +25821,6 @@ static __exception int compute_stack_size_rec(JSContext *ctx,
         case OP_tail_call_method:
         case OP_return:
         case OP_return_undef:
-        case OP_return_async:
         case OP_throw:
         case OP_throw_var:
         case OP_ret:
@@ -26945,7 +26324,6 @@ static int js_parse_function_check_names(JSParseState *s, JSFunctionDef *fd,
     /* check async_generator case */
     if ((fd->js_mode & JS_MODE_STRICT)
     ||  !fd->has_simple_parameter_list
-    ||  (fd->func_type == JS_PARSE_FUNC_METHOD && fd->func_kind == JS_FUNC_ASYNC)
     ||  fd->func_type == JS_PARSE_FUNC_ARROW
     ||  fd->func_type == JS_PARSE_FUNC_METHOD) {
         for (idx = 0; idx < fd->arg_count; idx++) {
@@ -27020,24 +26398,12 @@ static __exception int js_parse_function_decl2(JSParseState *s,
     if (func_type == JS_PARSE_FUNC_STATEMENT ||
         func_type == JS_PARSE_FUNC_VAR ||
         func_type == JS_PARSE_FUNC_EXPR) {
-        if (func_kind == JS_FUNC_NORMAL &&
-            token_is_pseudo_keyword(s, JS_ATOM_async) &&
-            peek_token(s, TRUE) != '\n') {
-            if (next_token(s))
-                return -1;
-            func_kind = JS_FUNC_ASYNC;
-        }
+
         if (next_token(s))
             return -1;
 
         if (s->token.val == TOK_IDENT) {
-            if (s->token.u.ident.is_reserved ||
-                (s->token.u.ident.atom == JS_ATOM_yield &&
-                 func_type == JS_PARSE_FUNC_EXPR &&
-                 (fd->js_mode & JS_MODE_STRICT)) ||
-                (s->token.u.ident.atom == JS_ATOM_await &&
-                 func_type == JS_PARSE_FUNC_EXPR &&
-                 (func_kind & JS_FUNC_ASYNC))) {
+            if (s->token.u.ident.is_reserved) {
                 return js_parse_error_reserved_identifier(s);
             }
         }
@@ -27323,10 +26689,7 @@ static __exception int js_parse_function_decl2(JSParseState *s,
             if (js_parse_assign_expr(s, TRUE))
                 goto fail;
 
-            if (func_kind != JS_FUNC_NORMAL)
-                emit_op(s, OP_return_async);
-            else
-                emit_op(s, OP_return);
+            emit_op(s, OP_return);
 
             if (!(fd->js_mode & JS_MODE_STRIP)) {
                 /* save the function source code */
@@ -30295,7 +29658,7 @@ static JSValue js_object_fromEntries(JSContext *ctx, JSValueConst this_val,
     if (JS_IsException(obj))
         return obj;
     
-    iter = JS_GetIterator(ctx, iterable, FALSE);
+    iter = JS_GetIterator(ctx, iterable);
     if (JS_IsException(iter))
         goto fail;
     next_method = JS_GetProperty(ctx, iter, JS_ATOM_next);
@@ -30947,9 +30310,6 @@ static JSValue js_function_toString(JSContext *ctx, JSValueConst this_val,
             case JS_FUNC_NORMAL:
                 pref = "function ";
                 break;
-            case JS_FUNC_ASYNC:
-                pref = "async function ";
-                break;
             }
             suff = "() {\n    [native code]\n}";
         }
@@ -31157,7 +30517,7 @@ static JSValue js_array_from(JSContext *ctx, JSValueConst this_val,
         if (JS_IsException(r))
             goto exception;
         stack[0] = JS_DupValue(ctx, items);
-        if (js_for_of_start(ctx, &stack[1], FALSE))
+        if (js_for_of_start(ctx, &stack[1]))
             goto exception;
         for (k = 0;; k++) {
             v = JS_IteratorNext(ctx, stack[0], stack[1], 0, NULL, &done);
@@ -37787,7 +37147,7 @@ static JSValue js_promise_all(JSContext *ctx, JSValueConst this_val,
     result_promise = js_new_promise_capability(ctx, resolving_funcs, this_val);
     if (JS_IsException(result_promise))
         return result_promise;
-    iter = JS_GetIterator(ctx, argv[0], FALSE);
+    iter = JS_GetIterator(ctx, argv[0]);
     if (JS_IsException(iter)) {
         JSValue error;
     fail_reject:
@@ -37916,7 +37276,7 @@ static JSValue js_promise_race(JSContext *ctx, JSValueConst this_val,
     result_promise = js_new_promise_capability(ctx, resolving_funcs, this_val);
     if (JS_IsException(result_promise))
         return result_promise;
-    iter = JS_GetIterator(ctx, argv[0], FALSE);
+    iter = JS_GetIterator(ctx, argv[0]);
     if (JS_IsException(iter)) {
         JSValue error;
     fail_reject:
@@ -38174,209 +37534,10 @@ static const JSCFunctionListEntry js_promise_proto_funcs[] = {
     JS_PROP_STRING_DEF("[Symbol.toStringTag]", "Promise", JS_PROP_CONFIGURABLE ),
 };
 
-/* AsyncFunction */
-static const JSCFunctionListEntry js_async_function_proto_funcs[] = {
-    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "AsyncFunction", JS_PROP_CONFIGURABLE ),
-};
-
-static JSValue js_async_from_sync_iterator_unwrap(JSContext *ctx,
-                                                  JSValueConst this_val,
-                                                  int argc, JSValueConst *argv,
-                                                  int magic, JSValue *func_data)
-{
-    return js_create_iterator_result(ctx, JS_DupValue(ctx, argv[0]),
-                                     JS_ToBool(ctx, func_data[0]));
-}
-
-static JSValue js_async_from_sync_iterator_unwrap_func_create(JSContext *ctx,
-                                                              BOOL done)
-{
-    JSValueConst func_data[1];
-
-    func_data[0] = (JSValueConst)JS_NewBool(ctx, done);
-    return JS_NewCFunctionData(ctx, js_async_from_sync_iterator_unwrap,
-                               1, 0, 1, func_data);
-}
-
-/* AsyncIteratorPrototype */
-
-static const JSCFunctionListEntry js_async_iterator_proto_funcs[] = {
-    JS_CFUNC_DEF("[Symbol.asyncIterator]", 0, js_iterator_proto_iterator ),
-};
-
-/* AsyncFromSyncIteratorPrototype */
-
-typedef struct JSAsyncFromSyncIteratorData {
-    JSValue sync_iter;
-    JSValue next_method;
-} JSAsyncFromSyncIteratorData;
-
-static void js_async_from_sync_iterator_finalizer(JSRuntime *rt, JSValue val)
-{
-    JSAsyncFromSyncIteratorData *s =
-        JS_GetOpaque(val, JS_CLASS_ASYNC_FROM_SYNC_ITERATOR);
-    if (s) {
-        JS_FreeValueRT(rt, s->sync_iter);
-        JS_FreeValueRT(rt, s->next_method);
-        js_free_rt(rt, s);
-    }
-}
-
-static void js_async_from_sync_iterator_mark(JSRuntime *rt, JSValueConst val,
-                                             JS_MarkFunc *mark_func)
-{
-    JSAsyncFromSyncIteratorData *s =
-        JS_GetOpaque(val, JS_CLASS_ASYNC_FROM_SYNC_ITERATOR);
-    if (s) {
-        JS_MarkValue(rt, s->sync_iter, mark_func);
-        JS_MarkValue(rt, s->next_method, mark_func);
-    }
-}
-
-static JSValue JS_CreateAsyncFromSyncIterator(JSContext *ctx,
-                                              JSValueConst sync_iter)
-{
-    JSValue async_iter, next_method;
-    JSAsyncFromSyncIteratorData *s;
-
-    next_method = JS_GetProperty(ctx, sync_iter, JS_ATOM_next);
-    if (JS_IsException(next_method))
-        return JS_EXCEPTION;
-    async_iter = JS_NewObjectClass(ctx, JS_CLASS_ASYNC_FROM_SYNC_ITERATOR);
-    if (JS_IsException(async_iter)) {
-        JS_FreeValue(ctx, next_method);
-        return async_iter;
-    }
-    s = js_mallocz(ctx, sizeof(*s));
-    if (!s) {
-        JS_FreeValue(ctx, async_iter);
-        JS_FreeValue(ctx, next_method);
-        return JS_EXCEPTION;
-    }
-    s->sync_iter = JS_DupValue(ctx, sync_iter);
-    s->next_method = next_method;
-    JS_SetOpaque(async_iter, s);
-    return async_iter;
-}
-
-static JSValue js_async_from_sync_iterator_next(JSContext *ctx, JSValueConst this_val,
-                                                int argc, JSValueConst *argv,
-                                                int magic)
-{
-    JSValue promise, resolving_funcs[2], value, err, method;
-    JSAsyncFromSyncIteratorData *s;
-    int done;
-    int is_reject;
-
-    promise = JS_NewPromiseCapability(ctx, resolving_funcs);
-    if (JS_IsException(promise))
-        return JS_EXCEPTION;
-    s = JS_GetOpaque(this_val, JS_CLASS_ASYNC_FROM_SYNC_ITERATOR);
-    if (!s) {
-        JS_ThrowTypeError(ctx, "not an Async-from-Sync Iterator");
-        goto reject;
-    }
-
-    if (magic == GEN_MAGIC_NEXT) {
-        method = JS_DupValue(ctx, s->next_method);
-    } else {
-        method = JS_GetProperty(ctx, s->sync_iter,
-                                magic == GEN_MAGIC_RETURN ? JS_ATOM_return :
-                                JS_ATOM_throw);
-        if (JS_IsException(method))
-            goto reject;
-        if (JS_IsUndefined(method) || JS_IsNull(method)) {
-            if (magic == GEN_MAGIC_RETURN) {
-                err = js_create_iterator_result(ctx, JS_DupValue(ctx, argv[0]), TRUE);
-                is_reject = 0;
-            } else {
-                err = JS_DupValue(ctx, argv[0]);
-                is_reject = 1;
-            }
-            goto done_resolve;
-        }
-    }
-    value = JS_IteratorNext2(ctx, s->sync_iter, method, 1, argv, &done);
-    JS_FreeValue(ctx, method);
-    if (JS_IsException(value))
-        goto reject;
-    if (done == 2) {
-        JSValue obj = value;
-        value = JS_IteratorGetCompleteValue(ctx, obj, &done);
-        JS_FreeValue(ctx, obj);
-        if (JS_IsException(value))
-            goto reject;
-    }
-
-    if (JS_IsException(value)) {
-        JSValue res2;
-    reject:
-        err = JS_GetException(ctx);
-        is_reject = 1;
-    done_resolve:
-        res2 = JS_Call(ctx, resolving_funcs[is_reject], JS_UNDEFINED,
-                       1, (JSValueConst *)&err);
-        JS_FreeValue(ctx, err);
-        JS_FreeValue(ctx, res2);
-        JS_FreeValue(ctx, resolving_funcs[0]);
-        JS_FreeValue(ctx, resolving_funcs[1]);
-        return promise;
-    }
-    {
-        JSValue value_wrapper_promise, resolve_reject[2];
-        int res;
-
-        value_wrapper_promise = js_promise_resolve(ctx, ctx->promise_ctor,
-                                                   1, (JSValueConst *)&value, 0);
-        if (JS_IsException(value_wrapper_promise)) {
-            JS_FreeValue(ctx, value);
-            goto reject;
-        }
-
-        resolve_reject[0] =
-            js_async_from_sync_iterator_unwrap_func_create(ctx, done);
-        if (JS_IsException(resolve_reject[0])) {
-            JS_FreeValue(ctx, value_wrapper_promise);
-            goto fail;
-        }
-        JS_FreeValue(ctx, value);
-        resolve_reject[1] = JS_UNDEFINED;
-
-        res = perform_promise_then(ctx, value_wrapper_promise,
-                                   (JSValueConst *)resolve_reject,
-                                   (JSValueConst *)resolving_funcs);
-        JS_FreeValue(ctx, resolve_reject[0]);
-        JS_FreeValue(ctx, value_wrapper_promise);
-        JS_FreeValue(ctx, resolving_funcs[0]);
-        JS_FreeValue(ctx, resolving_funcs[1]);
-        if (res) {
-            JS_FreeValue(ctx, promise);
-            return JS_EXCEPTION;
-        }
-    }
-    return promise;
- fail:
-    JS_FreeValue(ctx, value);
-    JS_FreeValue(ctx, resolving_funcs[0]);
-    JS_FreeValue(ctx, resolving_funcs[1]);
-    JS_FreeValue(ctx, promise);
-    return JS_EXCEPTION;
-}
-
-static const JSCFunctionListEntry js_async_from_sync_iterator_proto_funcs[] = {
-    JS_CFUNC_MAGIC_DEF("next", 1, js_async_from_sync_iterator_next, GEN_MAGIC_NEXT ),
-    JS_CFUNC_MAGIC_DEF("return", 1, js_async_from_sync_iterator_next, GEN_MAGIC_RETURN ),
-    JS_CFUNC_MAGIC_DEF("throw", 1, js_async_from_sync_iterator_next, GEN_MAGIC_THROW ),
-};
-
 static JSClassShortDef const js_async_class_def[] = {
     { JS_ATOM_Promise, js_promise_finalizer, js_promise_mark },                      /* JS_CLASS_PROMISE */
     { JS_ATOM_PromiseResolveFunction, js_promise_resolve_function_finalizer, js_promise_resolve_function_mark }, /* JS_CLASS_PROMISE_RESOLVE_FUNCTION */
     { JS_ATOM_PromiseRejectFunction, js_promise_resolve_function_finalizer, js_promise_resolve_function_mark }, /* JS_CLASS_PROMISE_REJECT_FUNCTION */
-    { JS_ATOM_AsyncFunction, js_bytecode_function_finalizer, js_bytecode_function_mark },  /* JS_CLASS_ASYNC_FUNCTION */
-    { JS_ATOM_AsyncFunctionResolve, js_async_function_resolve_finalizer, js_async_function_resolve_mark }, /* JS_CLASS_ASYNC_FUNCTION_RESOLVE */
-    { JS_ATOM_AsyncFunctionReject, js_async_function_resolve_finalizer, js_async_function_resolve_mark }, /* JS_CLASS_ASYNC_FUNCTION_REJECT */
-    { JS_ATOM_empty_string, js_async_from_sync_iterator_finalizer, js_async_from_sync_iterator_mark }, /* JS_CLASS_ASYNC_FROM_SYNC_ITERATOR */
 };
 
 void JS_AddIntrinsicPromise(JSContext *ctx)
@@ -38389,9 +37550,6 @@ void JS_AddIntrinsicPromise(JSContext *ctx)
                          countof(js_async_class_def));
         rt->class_array[JS_CLASS_PROMISE_RESOLVE_FUNCTION].call = js_promise_resolve_function_call;
         rt->class_array[JS_CLASS_PROMISE_REJECT_FUNCTION].call = js_promise_resolve_function_call;
-        rt->class_array[JS_CLASS_ASYNC_FUNCTION].call = js_async_function_call;
-        rt->class_array[JS_CLASS_ASYNC_FUNCTION_RESOLVE].call = js_async_function_resolve_call;
-        rt->class_array[JS_CLASS_ASYNC_FUNCTION_REJECT].call = js_async_function_resolve_call;
     }
 
     /* Promise */
@@ -38407,33 +37565,6 @@ void JS_AddIntrinsicPromise(JSContext *ctx)
                                countof(js_promise_funcs));
     JS_NewGlobalCConstructor2(ctx, obj1, "Promise",
                               ctx->class_proto[JS_CLASS_PROMISE]);
-
-    /* AsyncFunction */
-    ctx->class_proto[JS_CLASS_ASYNC_FUNCTION] = JS_NewObjectProto(ctx, ctx->function_proto);
-    obj1 = JS_NewCFunction3(ctx, (JSCFunction *)js_function_constructor,
-                            "AsyncFunction", 1,
-                            JS_CFUNC_constructor_or_func_magic, JS_FUNC_ASYNC,
-                            ctx->function_ctor);
-    JS_SetPropertyFunctionList(ctx,
-                               ctx->class_proto[JS_CLASS_ASYNC_FUNCTION],
-                               js_async_function_proto_funcs,
-                               countof(js_async_function_proto_funcs));
-    JS_SetConstructor2(ctx, obj1, ctx->class_proto[JS_CLASS_ASYNC_FUNCTION],
-                       0, JS_PROP_CONFIGURABLE);
-    JS_FreeValue(ctx, obj1);
-
-    /* AsyncIteratorPrototype */
-    ctx->async_iterator_proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, ctx->async_iterator_proto,
-                               js_async_iterator_proto_funcs,
-                               countof(js_async_iterator_proto_funcs));
-
-    /* AsyncFromSyncIteratorPrototype */
-    ctx->class_proto[JS_CLASS_ASYNC_FROM_SYNC_ITERATOR] =
-        JS_NewObjectProto(ctx, ctx->async_iterator_proto);
-    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_ASYNC_FROM_SYNC_ITERATOR],
-                               js_async_from_sync_iterator_proto_funcs,
-                               countof(js_async_from_sync_iterator_proto_funcs));
 }
 
 /* URI handling */
