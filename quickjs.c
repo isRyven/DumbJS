@@ -437,9 +437,7 @@ typedef struct JSVarDef {
 
 typedef enum JSFunctionKindEnum {
     JS_FUNC_NORMAL = 0,
-    JS_FUNC_GENERATOR = (1 << 0),
     JS_FUNC_ASYNC = (1 << 1),
-    JS_FUNC_ASYNC_GENERATOR = (JS_FUNC_GENERATOR | JS_FUNC_ASYNC),
 } JSFunctionKindEnum;
 
 typedef struct JSFunctionBytecode {
@@ -723,12 +721,10 @@ struct JSObject {
         struct JSForInIterator *for_in_iterator; /* JS_CLASS_FOR_IN_ITERATOR */
         struct JSArrayIteratorData *array_iterator_data; /* JS_CLASS_ARRAY_ITERATOR, JS_CLASS_STRING_ITERATOR */
         struct JSRegExpStringIteratorData *regexp_string_iterator_data; /* JS_CLASS_REGEXP_STRING_ITERATOR */
-        struct JSGeneratorData *generator_data; /* JS_CLASS_GENERATOR */
         struct JSPromiseData *promise_data; /* JS_CLASS_PROMISE */
         struct JSPromiseFunctionData *promise_function_data; /* JS_CLASS_PROMISE_RESOLVE_FUNCTION, JS_CLASS_PROMISE_REJECT_FUNCTION */
         struct JSAsyncFunctionData *async_function_data; /* JS_CLASS_ASYNC_FUNCTION_RESOLVE, JS_CLASS_ASYNC_FUNCTION_REJECT */
         struct JSAsyncFromSyncIteratorData *async_from_sync_iterator_data; /* JS_CLASS_ASYNC_FROM_SYNC_ITERATOR */
-        struct JSAsyncGeneratorData *async_generator_data; /* JS_CLASS_ASYNC_GENERATOR */
         struct { /* JS_CLASS_BYTECODE_FUNCTION: 12/24 bytes */
             /* also used by JS_CLASS_GENERATOR_FUNCTION, JS_CLASS_ASYNC_FUNCTION and JS_CLASS_ASYNC_GENERATOR_FUNCTION */
             struct JSFunctionBytecode *function_bytecode;
@@ -868,9 +864,6 @@ static void js_array_iterator_mark(JSRuntime *rt, JSValueConst val,
 static void js_regexp_string_iterator_finalizer(JSRuntime *rt, JSValue val);
 static void js_regexp_string_iterator_mark(JSRuntime *rt, JSValueConst val,
                                 JS_MarkFunc *mark_func);
-static void js_generator_finalizer(JSRuntime *rt, JSValue obj);
-static void js_generator_mark(JSRuntime *rt, JSValueConst val,
-                                JS_MarkFunc *mark_func);
 static void js_promise_finalizer(JSRuntime *rt, JSValue val);
 static void js_promise_mark(JSRuntime *rt, JSValueConst val,
                                 JS_MarkFunc *mark_func);
@@ -911,10 +904,6 @@ static int JS_CreateProperty(JSContext *ctx, JSObject *p,
 static int js_string_memcmp(const JSString *p1, const JSString *p2, int len);
 static JSVarRef *get_var_ref(JSContext *ctx, JSStackFrame *sf, int var_idx,
                              BOOL is_arg);
-static JSValue js_generator_function_call(JSContext *ctx, JSValueConst func_obj,
-                                          JSValueConst this_obj,
-                                          int argc, JSValueConst *argv,
-                                          int flags);
 static void js_async_function_resolve_finalizer(JSRuntime *rt, JSValue val);
 static void js_async_function_resolve_mark(JSRuntime *rt, JSValueConst val,
                                            JS_MarkFunc *mark_func);
@@ -1149,7 +1138,6 @@ static JSClassShortDef const js_std_class_def[] = {
     { JS_ATOM_Array_Iterator, js_array_iterator_finalizer, js_array_iterator_mark }, /* JS_CLASS_ARRAY_ITERATOR */
     { JS_ATOM_String_Iterator, js_array_iterator_finalizer, js_array_iterator_mark }, /* JS_CLASS_STRING_ITERATOR */
     { JS_ATOM_RegExp_String_Iterator, js_regexp_string_iterator_finalizer, js_regexp_string_iterator_mark }, /* JS_CLASS_STRING_ITERATOR */
-    { JS_ATOM_Generator, js_generator_finalizer, js_generator_mark }, /* JS_CLASS_GENERATOR */
 };
 
 static int init_class_range(JSRuntime *rt, JSClassShortDef const *tab,
@@ -1214,7 +1202,6 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
     rt->class_array[JS_CLASS_C_FUNCTION].call = js_call_c_function;
     rt->class_array[JS_CLASS_C_FUNCTION_DATA].call = js_c_function_data_call;
     rt->class_array[JS_CLASS_BOUND_FUNCTION].call = js_call_bound_function;
-    rt->class_array[JS_CLASS_GENERATOR_FUNCTION].call = js_generator_function_call;
     if (init_shape_hash(rt))
         goto fail;
     return rt;
@@ -4214,9 +4201,7 @@ static void js_function_set_properties(JSContext *ctx, JSValueConst func_obj,
 static BOOL js_class_has_bytecode(JSClassID class_id)
 {
     return (class_id == JS_CLASS_BYTECODE_FUNCTION ||
-            class_id == JS_CLASS_GENERATOR_FUNCTION ||
-            class_id == JS_CLASS_ASYNC_FUNCTION ||
-            class_id == JS_CLASS_ASYNC_GENERATOR_FUNCTION);
+            class_id == JS_CLASS_ASYNC_FUNCTION);
 }
 
 /* return NULL without exception if not a function or no bytecode */
@@ -5317,7 +5302,6 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
                 }
             }
             break;
-        case JS_CLASS_GENERATOR:         /* u.generator_data */
         case JS_CLASS_ARRAY_ITERATOR:    /* u.array_iterator_data */
         case JS_CLASS_STRING_ITERATOR:   /* u.array_iterator_data */
         case JS_CLASS_PROMISE:           /* u.promise_data */
@@ -5326,7 +5310,6 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
         case JS_CLASS_ASYNC_FUNCTION_RESOLVE:    /* u.async_function_data */
         case JS_CLASS_ASYNC_FUNCTION_REJECT:     /* u.async_function_data */
         case JS_CLASS_ASYNC_FROM_SYNC_ITERATOR:  /* u.async_from_sync_iterator_data */
-        case JS_CLASS_ASYNC_GENERATOR:   /* u.async_generator_data */
             /* TODO */
         default:
             /* XXX: class definition should have an opaque block size */
@@ -11589,9 +11572,7 @@ static JSValue js_closure(JSContext *ctx, JSValue bfunc,
     JSAtom name_atom;
     static const uint16_t func_kind_to_class_id[] = {
         [JS_FUNC_NORMAL] = JS_CLASS_BYTECODE_FUNCTION,
-        [JS_FUNC_GENERATOR] = JS_CLASS_GENERATOR_FUNCTION,
         [JS_FUNC_ASYNC] = JS_CLASS_ASYNC_FUNCTION,
-        [JS_FUNC_ASYNC_GENERATOR] = JS_CLASS_ASYNC_GENERATOR_FUNCTION,
     };
 
     b = JS_VALUE_GET_PTR(bfunc);
@@ -11611,21 +11592,7 @@ static JSValue js_closure(JSContext *ctx, JSValue bfunc,
     js_function_set_properties(ctx, func_obj, name_atom,
                                b->defined_arg_count);
 
-    if (b->func_kind & JS_FUNC_GENERATOR) {
-        JSValue proto;
-        int proto_class_id;
-        /* generators have a prototype field which is used as
-           prototype for the generator object */
-        if (b->func_kind == JS_FUNC_ASYNC_GENERATOR)
-            proto_class_id = JS_CLASS_ASYNC_GENERATOR;
-        else
-            proto_class_id = JS_CLASS_GENERATOR;
-        proto = JS_NewObjectProto(ctx, ctx->class_proto[proto_class_id]);
-        if (JS_IsException(proto))
-            goto fail;
-        JS_DefinePropertyValue(ctx, func_obj, JS_ATOM_prototype, proto,
-                               JS_PROP_WRITABLE);
-    } else if (b->has_prototype) {
+    if (b->has_prototype) {
         /* add the 'prototype' property: delay instantiation to avoid
            creating cycles for every javascript function. The prototype
            object is created on the fly when first accessed */
@@ -14679,255 +14646,10 @@ static JSValue async_func_resume(JSContext *ctx, JSAsyncFunctionState *s)
                            s->argc, s->frame.arg_buf, JS_CALL_FLAG_GENERATOR);
 }
 
-
-/* Generators */
-
-typedef enum JSGeneratorStateEnum {
-    JS_GENERATOR_STATE_SUSPENDED_START,
-    JS_GENERATOR_STATE_SUSPENDED_YIELD,
-    JS_GENERATOR_STATE_SUSPENDED_YIELD_STAR,
-    JS_GENERATOR_STATE_EXECUTING,
-    JS_GENERATOR_STATE_COMPLETED,
-} JSGeneratorStateEnum;
-
-typedef struct JSGeneratorData {
-    JSGeneratorStateEnum state;
-    JSAsyncFunctionState func_state;
-} JSGeneratorData;
-
-static void free_generator_stack_rt(JSRuntime *rt, JSGeneratorData *s)
-{
-    if (s->state == JS_GENERATOR_STATE_COMPLETED)
-        return;
-    async_func_free(rt, &s->func_state);
-    s->state = JS_GENERATOR_STATE_COMPLETED;
-}
-
-static void js_generator_finalizer(JSRuntime *rt, JSValue obj)
-{
-    JSGeneratorData *s = JS_GetOpaque(obj, JS_CLASS_GENERATOR);
-
-    if (s) {
-        free_generator_stack_rt(rt, s);
-        js_free_rt(rt, s);
-    }
-}
-
-static void free_generator_stack(JSContext *ctx, JSGeneratorData *s)
-{
-    free_generator_stack_rt(ctx->rt, s);
-}
-
-static void js_generator_mark(JSRuntime *rt, JSValueConst val,
-                              JS_MarkFunc *mark_func)
-{
-    JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSGeneratorData *s = p->u.generator_data;
-
-    if (!s || s->state == JS_GENERATOR_STATE_COMPLETED)
-        return;
-    async_func_mark(rt, &s->func_state, mark_func);
-}
-
 /* XXX: use enum */
 #define GEN_MAGIC_NEXT   0
 #define GEN_MAGIC_RETURN 1
 #define GEN_MAGIC_THROW  2
-
-static JSValue js_generator_next(JSContext *ctx, JSValueConst this_val,
-                                 int argc, JSValueConst *argv,
-                                 BOOL *pdone, int magic)
-{
-    JSGeneratorData *s = JS_GetOpaque(this_val, JS_CLASS_GENERATOR);
-    JSStackFrame *sf;
-    JSValue ret, func_ret;
-    JSValueConst iter_args[1];
-
-    *pdone = TRUE;
-    if (!s)
-        return JS_ThrowTypeError(ctx, "not a generator");
-    sf = &s->func_state.frame;
- redo:
-    switch(s->state) {
-    default:
-    case JS_GENERATOR_STATE_SUSPENDED_START:
-        if (magic == GEN_MAGIC_NEXT) {
-            goto exec_no_arg;
-        } else {
-            free_generator_stack(ctx, s);
-            goto done;
-        }
-        break;
-    case JS_GENERATOR_STATE_SUSPENDED_YIELD_STAR:
-        {
-            int done;
-            JSValue method, iter_obj;
-
-            iter_obj = sf->cur_sp[-2];
-            if (magic == GEN_MAGIC_NEXT) {
-                method = JS_DupValue(ctx, sf->cur_sp[-1]);
-            } else {
-                method = JS_GetProperty(ctx, iter_obj,
-                                        magic == GEN_MAGIC_RETURN ?
-                                        JS_ATOM_return : JS_ATOM_throw);
-                if (JS_IsException(method))
-                    goto iter_exception;
-            }
-            if (magic != GEN_MAGIC_NEXT &&
-                (JS_IsUndefined(method) || JS_IsNull(method))) {
-                /* default action */
-                if (magic == GEN_MAGIC_RETURN) {
-                    ret = JS_DupValue(ctx, argv[0]);
-                    goto iter_done;
-                } else {
-                    if (JS_IteratorClose(ctx, iter_obj, FALSE))
-                        goto iter_exception;
-                    JS_ThrowTypeError(ctx, "iterator does not have a throw method");
-                    goto iter_exception;
-                }
-            }
-            ret = JS_IteratorNext2(ctx, iter_obj, method, argc, argv, &done);
-            JS_FreeValue(ctx, method);
-            if (JS_IsException(ret)) {
-            iter_exception:
-                goto exec_throw;
-            }
-            /* if not done, the iterator returns the exact object
-               returned by 'method' */
-            if (done == 2) {
-                JSValue done_val, value;
-                done_val = JS_GetProperty(ctx, ret, JS_ATOM_done);
-                if (JS_IsException(done_val)) {
-                    JS_FreeValue(ctx, ret);
-                    goto iter_exception;
-                }
-                done = JS_ToBoolFree(ctx, done_val);
-                if (done) {
-                    value = JS_GetProperty(ctx, ret, JS_ATOM_value);
-                    JS_FreeValue(ctx, ret);
-                    if (JS_IsException(value))
-                        goto iter_exception;
-                    ret = value;
-                    goto iter_done;
-                } else {
-                    *pdone = 2;
-                }
-            } else {
-                if (done) {
-                    /* 'yield *' returns the value associated to done = true */
-                iter_done:
-                    JS_FreeValue(ctx, sf->cur_sp[-2]);
-                    JS_FreeValue(ctx, sf->cur_sp[-1]);
-                    sf->cur_sp--;
-                    goto exec_arg;
-                } else {
-                    *pdone = FALSE;
-                }
-            }
-            break;
-        }
-        break;
-    case JS_GENERATOR_STATE_SUSPENDED_YIELD:
-        /* cur_sp[-1] was set to JS_UNDEFINED in the previous call */
-        ret = JS_DupValue(ctx, argv[0]);
-        if (magic == GEN_MAGIC_THROW) {
-            JS_Throw(ctx, ret);
-        exec_throw:
-            s->func_state.throw_flag = TRUE;
-        } else {
-        exec_arg:
-            sf->cur_sp[-1] = ret;
-            sf->cur_sp[0] = JS_NewBool(ctx, (magic == GEN_MAGIC_RETURN));
-            sf->cur_sp++;
-        exec_no_arg:
-            s->func_state.throw_flag = FALSE;
-        }
-        s->state = JS_GENERATOR_STATE_EXECUTING;
-        func_ret = async_func_resume(ctx, &s->func_state);
-        s->state = JS_GENERATOR_STATE_SUSPENDED_YIELD;
-        if (JS_IsException(func_ret)) {
-            /* finalize the execution in case of exception */
-            free_generator_stack(ctx, s);
-            return func_ret;
-        }
-        if (JS_VALUE_GET_TAG(func_ret) == JS_TAG_INT) {
-            if (JS_VALUE_GET_INT(func_ret) == FUNC_RET_YIELD_STAR) {
-                /* 'yield *' */
-                s->state = JS_GENERATOR_STATE_SUSPENDED_YIELD_STAR;
-                iter_args[0] = JS_UNDEFINED;
-                argc = 1;
-                argv = iter_args;
-                goto redo;
-            } else {
-                /* get the return the yield value at the top of the stack */
-                ret = sf->cur_sp[-1];
-                sf->cur_sp[-1] = JS_UNDEFINED;
-                *pdone = FALSE;
-            }
-        } else {
-            /* end of iterator */
-            ret = sf->cur_sp[-1];
-            sf->cur_sp[-1] = JS_UNDEFINED;
-            JS_FreeValue(ctx, func_ret);
-            free_generator_stack(ctx, s);
-        }
-        break;
-    case JS_GENERATOR_STATE_COMPLETED:
-    done:
-        /* execution is finished */
-        switch(magic) {
-        default:
-        case GEN_MAGIC_NEXT:
-            ret = JS_UNDEFINED;
-            break;
-        case GEN_MAGIC_RETURN:
-            ret = JS_DupValue(ctx, argv[0]);
-            break;
-        case GEN_MAGIC_THROW:
-            ret = JS_Throw(ctx, JS_DupValue(ctx, argv[0]));
-            break;
-        }
-        break;
-    case JS_GENERATOR_STATE_EXECUTING:
-        ret = JS_ThrowTypeError(ctx, "cannot invoke a running generator");
-        break;
-    }
-    return ret;
-}
-
-static JSValue js_generator_function_call(JSContext *ctx, JSValueConst func_obj,
-                                          JSValueConst this_obj,
-                                          int argc, JSValueConst *argv,
-                                          int flags)
-{
-    JSValue obj, func_ret;
-    JSGeneratorData *s;
-
-    s = js_mallocz(ctx, sizeof(*s));
-    if (!s)
-        return JS_EXCEPTION;
-    s->state = JS_GENERATOR_STATE_SUSPENDED_START;
-    if (async_func_init(ctx, &s->func_state, func_obj, this_obj, argc, argv)) {
-        s->state = JS_GENERATOR_STATE_COMPLETED;
-        goto fail;
-    }
-
-    /* execute the function up to 'OP_initial_yield' */
-    func_ret = async_func_resume(ctx, &s->func_state);
-    if (JS_IsException(func_ret))
-        goto fail;
-    JS_FreeValue(ctx, func_ret);
-
-    obj = js_create_from_ctor(ctx, func_obj, JS_CLASS_GENERATOR);
-    if (JS_IsException(obj))
-        goto fail;
-    JS_SetOpaque(obj, s);
-    return obj;
- fail:
-    free_generator_stack_rt(ctx->rt, s);
-    js_free(ctx, s);
-    return JS_EXCEPTION;
-}
 
 /* AsyncFunction */
 
@@ -15113,437 +14835,6 @@ static JSValue js_async_function_call(JSContext *ctx, JSValueConst func_obj,
     js_async_function_free(ctx->rt, s);
 
     return promise;
-}
-
-/* AsyncGenerator */
-
-typedef enum JSAsyncGeneratorStateEnum {
-    JS_ASYNC_GENERATOR_STATE_SUSPENDED_START,
-    JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD,
-    JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD_STAR,
-    JS_ASYNC_GENERATOR_STATE_EXECUTING,
-    JS_ASYNC_GENERATOR_STATE_AWAITING_RETURN,
-    JS_ASYNC_GENERATOR_STATE_COMPLETED,
-} JSAsyncGeneratorStateEnum;
-
-typedef struct JSAsyncGeneratorRequest {
-    struct list_head link;
-    /* completion */
-    int completion_type; /* GEN_MAGIC_x */
-    JSValue result;
-    /* promise capability */
-    JSValue promise;
-    JSValue resolving_funcs[2];
-} JSAsyncGeneratorRequest;
-
-typedef struct JSAsyncGeneratorData {
-    JSObject *generator; /* back pointer to the object (const) */
-    JSAsyncGeneratorStateEnum state;
-    JSAsyncFunctionState func_state;
-    struct list_head queue; /* list of JSAsyncGeneratorRequest.link */
-} JSAsyncGeneratorData;
-
-static void js_async_generator_free(JSRuntime *rt,
-                                    JSAsyncGeneratorData *s)
-{
-    struct list_head *el, *el1;
-    JSAsyncGeneratorRequest *req;
-
-    list_for_each_safe(el, el1, &s->queue) {
-        req = list_entry(el, JSAsyncGeneratorRequest, link);
-        JS_FreeValueRT(rt, req->result);
-        JS_FreeValueRT(rt, req->promise);
-        JS_FreeValueRT(rt, req->resolving_funcs[0]);
-        JS_FreeValueRT(rt, req->resolving_funcs[1]);
-        js_free_rt(rt, req);
-    }
-    if (s->state != JS_ASYNC_GENERATOR_STATE_COMPLETED &&
-        s->state != JS_ASYNC_GENERATOR_STATE_AWAITING_RETURN) {
-        async_func_free(rt, &s->func_state);
-    }
-    js_free_rt(rt, s);
-}
-
-static void js_async_generator_finalizer(JSRuntime *rt, JSValue obj)
-{
-    JSAsyncGeneratorData *s = JS_GetOpaque(obj, JS_CLASS_ASYNC_GENERATOR);
-
-    if (s) {
-        js_async_generator_free(rt, s);
-    }
-}
-
-static void js_async_generator_mark(JSRuntime *rt, JSValueConst val,
-                                    JS_MarkFunc *mark_func)
-{
-    JSAsyncGeneratorData *s = JS_GetOpaque(val, JS_CLASS_ASYNC_GENERATOR);
-    struct list_head *el;
-    JSAsyncGeneratorRequest *req;
-    if (s) {
-        list_for_each(el, &s->queue) {
-            req = list_entry(el, JSAsyncGeneratorRequest, link);
-            JS_MarkValue(rt, req->result, mark_func);
-            JS_MarkValue(rt, req->promise, mark_func);
-            JS_MarkValue(rt, req->resolving_funcs[0], mark_func);
-            JS_MarkValue(rt, req->resolving_funcs[1], mark_func);
-        }
-        if (s->state != JS_ASYNC_GENERATOR_STATE_COMPLETED &&
-            s->state != JS_ASYNC_GENERATOR_STATE_AWAITING_RETURN) {
-            async_func_mark(rt, &s->func_state, mark_func);
-        }
-    }
-}
-
-static JSValue js_async_generator_resolve_function(JSContext *ctx,
-                                          JSValueConst this_obj,
-                                          int argc, JSValueConst *argv,
-                                          int magic, JSValue *func_data);
-
-static int js_async_generator_resolve_function_create(JSContext *ctx,
-                                                      JSValueConst generator,
-                                                      JSValue *resolving_funcs,
-                                                      BOOL is_resume_next)
-{
-    int i;
-    JSValue func;
-
-    for(i = 0; i < 2; i++) {
-        func = JS_NewCFunctionData(ctx, js_async_generator_resolve_function, 1,
-                                   i + is_resume_next * 2, 1, &generator);
-        if (JS_IsException(func)) {
-            if (i == 1)
-                JS_FreeValue(ctx, resolving_funcs[0]);
-            return -1;
-        }
-        resolving_funcs[i] = func;
-    }
-    return 0;
-}
-
-static int js_async_generator_await(JSContext *ctx,
-                                    JSAsyncGeneratorData *s,
-                                    JSValueConst value)
-{
-    JSValue promise, resolving_funcs[2], resolving_funcs1[2];
-    int i, res;
-
-    promise = js_promise_resolve(ctx, ctx->promise_ctor,
-                                 1, &value, 0);
-    if (JS_IsException(promise))
-        goto fail;
-
-    if (js_async_generator_resolve_function_create(ctx, JS_MKPTR(JS_TAG_OBJECT, s->generator),
-                                                   resolving_funcs, FALSE)) {
-        JS_FreeValue(ctx, promise);
-        goto fail;
-    }
-
-    /* Note: no need to create 'thrownawayCapability' as in
-       the spec */
-    for(i = 0; i < 2; i++)
-        resolving_funcs1[i] = JS_UNDEFINED;
-    res = perform_promise_then(ctx, promise,
-                               (JSValueConst *)resolving_funcs,
-                               (JSValueConst *)resolving_funcs1);
-    JS_FreeValue(ctx, promise);
-    for(i = 0; i < 2; i++)
-        JS_FreeValue(ctx, resolving_funcs[i]);
-    if (res)
-        goto fail;
-    return 0;
- fail:
-    return -1;
-}
-
-static void js_async_generator_resolve_or_reject(JSContext *ctx,
-                                                 JSAsyncGeneratorData *s,
-                                                 JSValueConst result,
-                                                 int is_reject)
-{
-    JSAsyncGeneratorRequest *next;
-    JSValue ret;
-
-    next = list_entry(s->queue.next, JSAsyncGeneratorRequest, link);
-    list_del(&next->link);
-    ret = JS_Call(ctx, next->resolving_funcs[is_reject], JS_UNDEFINED, 1,
-                  &result);
-    JS_FreeValue(ctx, ret);
-    JS_FreeValue(ctx, next->result);
-    JS_FreeValue(ctx, next->promise);
-    JS_FreeValue(ctx, next->resolving_funcs[0]);
-    JS_FreeValue(ctx, next->resolving_funcs[1]);
-    js_free(ctx, next);
-}
-
-static void js_async_generator_resolve(JSContext *ctx,
-                                       JSAsyncGeneratorData *s,
-                                       JSValueConst value,
-                                       BOOL done)
-{
-    JSValue result;
-    result = js_create_iterator_result(ctx, JS_DupValue(ctx, value), done);
-    /* XXX: better exception handling ? */
-    js_async_generator_resolve_or_reject(ctx, s, result, 0);
-    JS_FreeValue(ctx, result);
- }
-
-static void js_async_generator_reject(JSContext *ctx,
-                                       JSAsyncGeneratorData *s,
-                                       JSValueConst exception)
-{
-    js_async_generator_resolve_or_reject(ctx, s, exception, 1);
-}
-
-static void js_async_generator_complete(JSContext *ctx,
-                                        JSAsyncGeneratorData *s)
-{
-    if (s->state != JS_ASYNC_GENERATOR_STATE_COMPLETED) {
-        s->state = JS_ASYNC_GENERATOR_STATE_COMPLETED;
-        async_func_free(ctx->rt, &s->func_state);
-    }
-}
-
-static int js_async_generator_completed_return(JSContext *ctx,
-                                               JSAsyncGeneratorData *s,
-                                               JSValueConst value)
-{
-    JSValue promise, resolving_funcs[2], resolving_funcs1[2];
-    int res;
-
-    promise = js_promise_resolve(ctx, ctx->promise_ctor,
-                                 1, (JSValueConst *)&value, 0);
-    if (JS_IsException(promise))
-        return -1;
-    if (js_async_generator_resolve_function_create(ctx,
-                                                   JS_MKPTR(JS_TAG_OBJECT, s->generator),
-                                                   resolving_funcs1,
-                                                   TRUE)) {
-        JS_FreeValue(ctx, promise);
-        return -1;
-    }
-    resolving_funcs[0] = JS_UNDEFINED;
-    resolving_funcs[1] = JS_UNDEFINED;
-    res = perform_promise_then(ctx, promise,
-                               (JSValueConst *)resolving_funcs1,
-                               (JSValueConst *)resolving_funcs);
-    JS_FreeValue(ctx, resolving_funcs1[0]);
-    JS_FreeValue(ctx, resolving_funcs1[1]);
-    JS_FreeValue(ctx, promise);
-    return res;
-}
-
-static void js_async_generator_resume_next(JSContext *ctx,
-                                           JSAsyncGeneratorData *s)
-{
-    JSAsyncGeneratorRequest *next;
-    JSValue func_ret, value;
-
-    for(;;) {
-        if (list_empty(&s->queue))
-            break;
-        next = list_entry(s->queue.next, JSAsyncGeneratorRequest, link);
-        switch(s->state) {
-        case JS_ASYNC_GENERATOR_STATE_EXECUTING:
-            /* only happens when restarting execution after await() */
-            goto resume_exec;
-        case JS_ASYNC_GENERATOR_STATE_AWAITING_RETURN:
-            goto done;
-        case JS_ASYNC_GENERATOR_STATE_SUSPENDED_START:
-            if (next->completion_type == GEN_MAGIC_NEXT) {
-                goto exec_no_arg;
-            } else {
-                js_async_generator_complete(ctx, s);
-            }
-            break;
-        case JS_ASYNC_GENERATOR_STATE_COMPLETED:
-            if (next->completion_type == GEN_MAGIC_NEXT) {
-                js_async_generator_resolve(ctx, s, JS_UNDEFINED, TRUE);
-            } else if (next->completion_type == GEN_MAGIC_RETURN) {
-                s->state = JS_ASYNC_GENERATOR_STATE_AWAITING_RETURN;
-                js_async_generator_completed_return(ctx, s, next->result);
-                goto done;
-            } else {
-                js_async_generator_reject(ctx, s, next->result);
-            }
-            goto done;
-        case JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD:
-        case JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD_STAR:
-            value = JS_DupValue(ctx, next->result);
-            if (next->completion_type == GEN_MAGIC_THROW &&
-                s->state == JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD) {
-                JS_Throw(ctx, value);
-                s->func_state.throw_flag = TRUE;
-            } else {
-                /* 'yield' returns a value. 'yield *' also returns a value
-                   in case the 'throw' method is called */
-                s->func_state.frame.cur_sp[-1] = value;
-                s->func_state.frame.cur_sp[0] =
-                    JS_NewInt32(ctx, next->completion_type);
-                s->func_state.frame.cur_sp++;
-            exec_no_arg:
-                s->func_state.throw_flag = FALSE;
-            }
-            s->state = JS_ASYNC_GENERATOR_STATE_EXECUTING;
-        resume_exec:
-            func_ret = async_func_resume(ctx, &s->func_state);
-            if (JS_IsException(func_ret)) {
-                value = JS_GetException(ctx);
-                js_async_generator_complete(ctx, s);
-                js_async_generator_reject(ctx, s, value);
-                JS_FreeValue(ctx, value);
-            } else if (JS_VALUE_GET_TAG(func_ret) == JS_TAG_INT) {
-                int func_ret_code;
-                value = s->func_state.frame.cur_sp[-1];
-                s->func_state.frame.cur_sp[-1] = JS_UNDEFINED;
-                func_ret_code = JS_VALUE_GET_INT(func_ret);
-                switch(func_ret_code) {
-                case FUNC_RET_YIELD:
-                case FUNC_RET_YIELD_STAR:
-                    if (func_ret_code == FUNC_RET_YIELD_STAR)
-                        s->state = JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD_STAR;
-                    else
-                        s->state = JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD;
-                    js_async_generator_resolve(ctx, s, value, FALSE);
-                    JS_FreeValue(ctx, value);
-                    break;
-                case FUNC_RET_AWAIT:
-                    js_async_generator_await(ctx, s, value);
-                    JS_FreeValue(ctx, value);
-                    goto done;
-                default:
-                    abort();
-                }
-            } else {
-                assert(JS_IsUndefined(func_ret));
-                /* end of function */
-                value = s->func_state.frame.cur_sp[-1];
-                s->func_state.frame.cur_sp[-1] = JS_UNDEFINED;
-                js_async_generator_complete(ctx, s);
-                js_async_generator_resolve(ctx, s, value, TRUE);
-                JS_FreeValue(ctx, value);
-            }
-            break;
-        default:
-            abort();
-        }
-    }
- done: ;
-}
-
-static JSValue js_async_generator_resolve_function(JSContext *ctx,
-                                                   JSValueConst this_obj,
-                                                   int argc, JSValueConst *argv,
-                                                   int magic, JSValue *func_data)
-{
-    BOOL is_reject = magic & 1;
-    JSAsyncGeneratorData *s = JS_GetOpaque(func_data[0], JS_CLASS_ASYNC_GENERATOR);
-    JSValueConst arg = argv[0];
-
-    /* XXX: what if s == NULL */
-
-    if (magic >= 2) {
-        /* resume next case in AWAITING_RETURN state */
-        assert(s->state == JS_ASYNC_GENERATOR_STATE_AWAITING_RETURN ||
-               s->state == JS_ASYNC_GENERATOR_STATE_COMPLETED);
-        s->state = JS_ASYNC_GENERATOR_STATE_COMPLETED;
-        if (is_reject) {
-            js_async_generator_reject(ctx, s, arg);
-        } else {
-            js_async_generator_resolve(ctx, s, arg, TRUE);
-        }
-    } else {
-        /* restart function execution after await() */
-        assert(s->state == JS_ASYNC_GENERATOR_STATE_EXECUTING);
-        s->func_state.throw_flag = is_reject;
-        if (is_reject) {
-            JS_Throw(ctx, JS_DupValue(ctx, arg));
-        } else {
-            /* return value of await */
-            s->func_state.frame.cur_sp[-1] = JS_DupValue(ctx, arg);
-        }
-        js_async_generator_resume_next(ctx, s);
-    }
-    return JS_UNDEFINED;
-}
-
-/* magic = GEN_MAGIC_x */
-static JSValue js_async_generator_next(JSContext *ctx, JSValueConst this_val,
-                                       int argc, JSValueConst *argv,
-                                       int magic)
-{
-    JSAsyncGeneratorData *s = JS_GetOpaque(this_val, JS_CLASS_ASYNC_GENERATOR);
-    JSValue promise, resolving_funcs[2];
-    JSAsyncGeneratorRequest *req;
-
-    promise = JS_NewPromiseCapability(ctx, resolving_funcs);
-    if (JS_IsException(promise))
-        return JS_EXCEPTION;
-    if (!s) {
-        JSValue err, res2;
-        JS_ThrowTypeError(ctx, "not an AsyncGenerator object");
-        err = JS_GetException(ctx);
-        res2 = JS_Call(ctx, resolving_funcs[1], JS_UNDEFINED,
-                       1, (JSValueConst *)&err);
-        JS_FreeValue(ctx, err);
-        JS_FreeValue(ctx, res2);
-        JS_FreeValue(ctx, resolving_funcs[0]);
-        JS_FreeValue(ctx, resolving_funcs[1]);
-        return promise;
-    }
-    req = js_mallocz(ctx, sizeof(*req));
-    if (!req)
-        goto fail;
-    req->completion_type = magic;
-    req->result = JS_DupValue(ctx, argv[0]);
-    req->promise = JS_DupValue(ctx, promise);
-    req->resolving_funcs[0] = resolving_funcs[0];
-    req->resolving_funcs[1] = resolving_funcs[1];
-    list_add_tail(&req->link, &s->queue);
-    if (s->state != JS_ASYNC_GENERATOR_STATE_EXECUTING) {
-        js_async_generator_resume_next(ctx, s);
-    }
-    return promise;
- fail:
-    JS_FreeValue(ctx, resolving_funcs[0]);
-    JS_FreeValue(ctx, resolving_funcs[1]);
-    JS_FreeValue(ctx, promise);
-    return JS_EXCEPTION;
-}
-
-static JSValue js_async_generator_function_call(JSContext *ctx, JSValueConst func_obj,
-                                                JSValueConst this_obj,
-                                                int argc, JSValueConst *argv,
-                                                int flags)
-{
-    JSValue obj, func_ret;
-    JSAsyncGeneratorData *s;
-
-    s = js_mallocz(ctx, sizeof(*s));
-    if (!s)
-        return JS_EXCEPTION;
-    s->state = JS_ASYNC_GENERATOR_STATE_SUSPENDED_START;
-    init_list_head(&s->queue);
-    if (async_func_init(ctx, &s->func_state, func_obj, this_obj, argc, argv)) {
-        s->state = JS_ASYNC_GENERATOR_STATE_COMPLETED;
-        goto fail;
-    }
-
-    /* execute the function up to 'OP_initial_yield' (no yield nor
-       await are possible) */
-    func_ret = async_func_resume(ctx, &s->func_state);
-    if (JS_IsException(func_ret))
-        goto fail;
-    JS_FreeValue(ctx, func_ret);
-
-    obj = js_create_from_ctor(ctx, func_obj, JS_CLASS_ASYNC_GENERATOR);
-    if (JS_IsException(obj))
-        goto fail;
-    s->generator = JS_VALUE_GET_OBJ(obj);
-    JS_SetOpaque(obj, s);
-    return obj;
- fail:
-    js_async_generator_free(ctx->rt, s);
-    return JS_EXCEPTION;
 }
 
 /* JS parser */
@@ -16502,11 +15793,6 @@ static __exception int next_token(JSParseState *s)
         if (s->token.u.ident.atom <= JS_ATOM_LAST_KEYWORD ||
             (s->token.u.ident.atom <= JS_ATOM_LAST_STRICT_KEYWORD &&
              s->cur_func && (s->cur_func->js_mode & JS_MODE_STRICT)) ||
-            (s->token.u.ident.atom == JS_ATOM_yield && s->cur_func &&
-             ((s->cur_func->func_kind & JS_FUNC_GENERATOR) ||
-              (s->cur_func->func_type == JS_PARSE_FUNC_ARROW &&
-               !s->cur_func->in_function_body && s->cur_func->parent &&
-               (s->cur_func->parent->func_kind & JS_FUNC_GENERATOR)))) ||
             (s->token.u.ident.atom == JS_ATOM_await &&
              (s->is_module ||
               (s->cur_func &&
@@ -17712,9 +16998,7 @@ static __exception int js_parse_template(JSParseState *s, int call, int *argc)
 #define PROP_TYPE_VAR   1
 #define PROP_TYPE_GET   2
 #define PROP_TYPE_SET   3
-#define PROP_TYPE_STAR  4
 #define PROP_TYPE_ASYNC 5
-#define PROP_TYPE_ASYNC_STAR 6
 
 #define PROP_TYPE_PRIVATE (1 << 4)
 
@@ -17752,10 +17036,6 @@ static int __exception js_parse_property_name(JSParseState *s,
             }
             prop_type = PROP_TYPE_GET + (name == JS_ATOM_set);
             JS_FreeAtom(s->ctx, name);
-        } else if (s->token.val == '*') {
-            if (next_token(s))
-                goto fail;
-            prop_type = PROP_TYPE_STAR;
         } else if (token_is_pseudo_keyword(s, JS_ATOM_async) &&
                    peek_token(s, TRUE) != '\n') {
             name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
@@ -17767,13 +17047,7 @@ static int __exception js_parse_property_name(JSParseState *s,
                 goto ident_found;
             }
             JS_FreeAtom(s->ctx, name);
-            if (s->token.val == '*') {
-                if (next_token(s))
-                    goto fail;
-                prop_type = PROP_TYPE_ASYNC_STAR;
-            } else {
-                prop_type = PROP_TYPE_ASYNC;
-            }
+            prop_type = PROP_TYPE_ASYNC;
         }
     }
 
@@ -18089,12 +17363,8 @@ static __exception int js_parse_object_literal(JSParseState *s)
                 func_type = JS_PARSE_FUNC_GETTER + prop_type - PROP_TYPE_GET;
             } else {
                 func_type = JS_PARSE_FUNC_METHOD;
-                if (prop_type == PROP_TYPE_STAR)
-                    func_kind = JS_FUNC_GENERATOR;
-                else if (prop_type == PROP_TYPE_ASYNC)
+                if (prop_type == PROP_TYPE_ASYNC)
                     func_kind = JS_FUNC_ASYNC;
-                else if (prop_type == PROP_TYPE_ASYNC_STAR)
-                    func_kind = JS_FUNC_ASYNC_GENERATOR;
             }
             if (js_parse_function_decl(s, func_type, func_kind, JS_ATOM_NULL,
                                        start_ptr, start_line))
@@ -18580,12 +17850,8 @@ static __exception int js_parse_class(JSParseState *s, BOOL is_class_expr,
             
             func_type = JS_PARSE_FUNC_METHOD;
             func_kind = JS_FUNC_NORMAL;
-            if (prop_type == PROP_TYPE_STAR) {
-                func_kind = JS_FUNC_GENERATOR;
-            } else if (prop_type == PROP_TYPE_ASYNC) {
+            if (prop_type == PROP_TYPE_ASYNC) {
                 func_kind = JS_FUNC_ASYNC;
-            } else if (prop_type == PROP_TYPE_ASYNC_STAR) {
-                func_kind = JS_FUNC_ASYNC_GENERATOR;
             } else if (name == JS_ATOM_constructor && !is_static) {
                 if (ctor_fd) {
                     js_parse_error(s, "property constructor appears more than once");
@@ -19136,7 +18402,7 @@ static __exception int js_define_var(JSParseState *s, JSAtom name, int tok)
     JSFunctionDef *fd = s->cur_func;
     JSVarDefEnum var_def_type;
     
-    if (name == JS_ATOM_yield && fd->func_kind == JS_FUNC_GENERATOR) {
+    if (name == JS_ATOM_yield && (fd->js_mode & JS_MODE_STRICT)) {
         return js_parse_error(s, "yield is a reserved identifier");
     }
     if ((name == JS_ATOM_arguments || name == JS_ATOM_eval)
@@ -20698,133 +19964,6 @@ static __exception int js_parse_assign_expr(JSParseState *s, BOOL in_accepted)
     JSAtom name0 = JS_ATOM_NULL;
     JSAtom name;
 
-    if (s->token.val == TOK_YIELD) {
-        BOOL is_star = FALSE;
-        if (!(s->cur_func->func_kind & JS_FUNC_GENERATOR))
-            return js_parse_error(s, "unexpected 'yield' keyword");
-        if (!s->cur_func->in_function_body)
-            return js_parse_error(s, "yield in default expression");
-        if (next_token(s))
-            return -1;
-        /* XXX: is there a better method to detect 'yield' without
-           parameters ? */
-        if (s->token.val != ';' && s->token.val != ')' &&
-            s->token.val != ']' && s->token.val != '}' &&
-            s->token.val != ',' && s->token.val != ':' && !s->got_lf) {
-            if (s->token.val == '*') {
-                is_star = TRUE;
-                if (next_token(s))
-                    return -1;
-            }
-            if (js_parse_assign_expr(s, in_accepted))
-                return -1;
-        } else {
-            emit_op(s, OP_undefined);
-        }
-        if (s->cur_func->func_kind == JS_FUNC_ASYNC_GENERATOR) {
-            int label_loop, label_return, label_next;
-            int label_return1, label_yield, label_throw, label_throw1;
-            int label_throw2;
-
-            if (is_star) {
-                label_loop = new_label(s);
-                label_yield = new_label(s);
-
-                emit_op(s, OP_for_await_of_start);
-
-                /* remove the catch offset (XXX: could avoid pushing back
-                   undefined) */
-                emit_op(s, OP_drop);
-                emit_op(s, OP_undefined);
-
-                emit_op(s, OP_undefined); /* initial value */
-
-                emit_label(s, label_loop);
-                emit_op(s, OP_async_iterator_next);
-                emit_op(s, OP_await);
-                emit_op(s, OP_iterator_get_value_done);
-                label_next = emit_goto(s, OP_if_true, -1); /* end of loop */
-                emit_op(s, OP_await);
-                emit_label(s, label_yield);
-                emit_op(s, OP_async_yield_star);
-                emit_op(s, OP_dup);
-                label_return = emit_goto(s, OP_if_true, -1);
-                emit_op(s, OP_drop);
-                emit_goto(s, OP_goto, label_loop);
-
-                emit_label(s, label_return);
-                emit_op(s, OP_push_i32);
-                emit_u32(s, 2);
-                emit_op(s, OP_strict_eq);
-                label_throw = emit_goto(s, OP_if_true, -1);
-
-                /* return handling */
-                emit_op(s, OP_await);
-                emit_op(s, OP_async_iterator_get);
-                emit_u8(s, 0);
-                label_return1 = emit_goto(s, OP_if_true, -1);
-                emit_op(s, OP_await);
-                emit_op(s, OP_iterator_get_value_done);
-                /* XXX: the spec does not indicate that an await should be
-                   performed in case done = true, but the tests assume it */
-                emit_goto(s, OP_if_false, label_yield);
-
-                emit_label(s, label_return1);
-                emit_op(s, OP_nip);
-                emit_op(s, OP_nip);
-                emit_op(s, OP_nip);
-                emit_return(s, TRUE);
-
-                /* throw handling */
-                emit_label(s, label_throw);
-                emit_op(s, OP_async_iterator_get);
-                emit_u8(s, 1);
-                label_throw1 = emit_goto(s, OP_if_true, -1);
-                emit_op(s, OP_await);
-                emit_op(s, OP_iterator_get_value_done);
-                emit_goto(s, OP_if_false, label_yield);
-                /* XXX: the spec does not indicate that an await should be
-                   performed in case done = true, but the tests assume it */
-                emit_op(s, OP_await);
-                emit_goto(s, OP_goto, label_next);
-                /* close the iterator and throw a type error exception */
-                emit_label(s, label_throw1);
-                emit_op(s, OP_async_iterator_get);
-                emit_u8(s, 0);
-                label_throw2 = emit_goto(s, OP_if_true, -1);
-                emit_op(s, OP_await);
-                emit_label(s, label_throw2);
-                emit_op(s, OP_async_iterator_get);
-                emit_u8(s, 2); /* throw the type error exception */
-                emit_op(s, OP_drop); /* never reached */
-
-                emit_label(s, label_next);
-                emit_op(s, OP_nip); /* keep the value associated with
-                                       done = true */
-                emit_op(s, OP_nip);
-                emit_op(s, OP_nip);
-            } else {
-                emit_op(s, OP_await);
-                emit_op(s, OP_yield);
-                label_next = emit_goto(s, OP_if_false, -1);
-                emit_return(s, TRUE);
-                emit_label(s, label_next);
-            }
-        } else {
-            int label_next;
-            if (is_star) {
-                emit_op(s, OP_for_of_start);
-                emit_op(s, OP_drop);    /* drop the catch offset */
-                emit_op(s, OP_yield_star);
-            } else {
-                emit_op(s, OP_yield);
-            }
-            label_next = emit_goto(s, OP_if_false, -1);
-            emit_return(s, TRUE);
-            emit_label(s, label_next);
-        }
-        return 0;
-    }
     if (s->token.val == TOK_IDENT) {
         /* name0 is used to check for OP_set_name pattern, not duplicated */
         name0 = s->token.u.ident.atom;
@@ -20984,16 +20123,7 @@ static void emit_return(JSParseState *s, BOOL hasval)
                 hasval = TRUE;
             }
             emit_op(s, OP_iterator_close_return);
-            if (s->cur_func->func_kind == JS_FUNC_ASYNC_GENERATOR) {
-                int label_next;
-                emit_op(s, OP_async_iterator_close);
-                label_next = emit_goto(s, OP_if_true, -1);
-                emit_op(s, OP_await);
-                emit_label(s, label_next);
-                emit_op(s, OP_drop);
-            } else {
-                emit_op(s, OP_iterator_close);
-            }
+            emit_op(s, OP_iterator_close);
             drop_count = -3;
         }
         drop_count += top->drop_count;
@@ -21034,8 +20164,6 @@ static void emit_return(JSParseState *s, BOOL hasval)
     } else if (s->cur_func->func_kind != JS_FUNC_NORMAL) {
         if (!hasval) {
             emit_op(s, OP_undefined);
-        } else if (s->cur_func->func_kind == JS_FUNC_ASYNC_GENERATOR) {
-            emit_op(s, OP_await);
         }
         emit_op(s, OP_return_async);
     } else {
@@ -22166,6 +21294,7 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
     case TOK_ENUM:
     case TOK_EXPORT:
     case TOK_EXTENDS:
+    case TOK_YIELD:
         js_unsupported_keyword(s, s->token.u.ident.atom);
         goto fail;
 
@@ -24291,7 +23420,7 @@ static __maybe_unused void js_dump_function_bytecode(JSContext *ctx, JSFunctionB
     }
 
     str = JS_AtomGetStr(ctx, atom_buf, sizeof(atom_buf), b->func_name);
-    printf("function: %s%s\n", &"*"[b->func_kind != JS_FUNC_GENERATOR], str);
+    printf("function: %s\n", str);
     if (b->js_mode) {
         printf("  mode:");
         if (b->js_mode & JS_MODE_STRICT)
@@ -27900,17 +27029,12 @@ static __exception int js_parse_function_decl2(JSParseState *s,
         }
         if (next_token(s))
             return -1;
-        if (s->token.val == '*') {
-            if (next_token(s))
-                return -1;
-            func_kind |= JS_FUNC_GENERATOR;
-        }
 
         if (s->token.val == TOK_IDENT) {
             if (s->token.u.ident.is_reserved ||
                 (s->token.u.ident.atom == JS_ATOM_yield &&
                  func_type == JS_PARSE_FUNC_EXPR &&
-                 (func_kind & JS_FUNC_GENERATOR)) ||
+                 (fd->js_mode & JS_MODE_STRICT)) ||
                 (s->token.u.ident.atom == JS_ATOM_await &&
                  func_type == JS_PARSE_FUNC_EXPR &&
                  (func_kind & JS_FUNC_ASYNC))) {
@@ -28083,7 +27207,7 @@ static __exception int js_parse_function_decl2(JSParseState *s,
                     goto fail;
                 }
                 name = s->token.u.ident.atom;
-                if (name == JS_ATOM_yield && fd->func_kind == JS_FUNC_GENERATOR) {
+                if (name == JS_ATOM_yield && (fd->js_mode & JS_MODE_STRICT)) {
                     js_parse_error_reserved_identifier(s);
                     goto fail;
                 }
@@ -28182,11 +27306,6 @@ static __exception int js_parse_function_decl2(JSParseState *s,
 
     if (next_token(s))
         goto fail;
-
-    /* generator function: yield after the parameters are evaluated */
-    if (func_kind == JS_FUNC_GENERATOR ||
-        func_kind == JS_FUNC_ASYNC_GENERATOR)
-        emit_op(s, OP_initial_yield);
 
     /* in generators, yield expression is forbidden during the parsing
        of the arguments */
@@ -31570,7 +30689,6 @@ static int patch_function_constructor_source(JSContext *ctx,
 static JSValue js_function_constructor(JSContext *ctx, JSValueConst new_target,
                                        int argc, JSValueConst *argv, int magic)
 {
-    JSFunctionKindEnum func_kind = magic;
     int i, n, ret, func_start_pos;
     JSValue s, proto, obj = JS_UNDEFINED;
     StringBuffer b_s, *b = &b_s;
@@ -31578,14 +30696,8 @@ static JSValue js_function_constructor(JSContext *ctx, JSValueConst new_target,
     string_buffer_init(ctx, b, 0);
     string_buffer_putc8(b, '(');
     
-    if (func_kind == JS_FUNC_ASYNC || func_kind == JS_FUNC_ASYNC_GENERATOR) {
-        string_buffer_puts8(b, "async ");
-    }
     string_buffer_puts8(b, "function");
 
-    if (func_kind == JS_FUNC_GENERATOR || func_kind == JS_FUNC_ASYNC_GENERATOR) {
-        string_buffer_putc8(b, '*');
-    }
     string_buffer_puts8(b, " anonymous(");
 
     n = argc - 1;
@@ -31835,14 +30947,8 @@ static JSValue js_function_toString(JSContext *ctx, JSValueConst this_val,
             case JS_FUNC_NORMAL:
                 pref = "function ";
                 break;
-            case JS_FUNC_GENERATOR:
-                pref = "function *";
-                break;
             case JS_FUNC_ASYNC:
                 pref = "async function ";
-                break;
-            case JS_FUNC_ASYNC_GENERATOR:
-                pref = "async function *";
                 break;
             }
             suff = "() {\n    [native code]\n}";
@@ -38080,18 +37186,6 @@ static const JSCFunctionListEntry js_symbol_funcs[] = {
     JS_CFUNC_DEF("keyFor", 1, js_symbol_keyFor ),
 };
 
-/* Generator */
-static const JSCFunctionListEntry js_generator_function_proto_funcs[] = {
-    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "GeneratorFunction", JS_PROP_CONFIGURABLE),
-};
-
-static const JSCFunctionListEntry js_generator_proto_funcs[] = {
-    JS_ITERATOR_NEXT_DEF("next", 1, js_generator_next, GEN_MAGIC_NEXT ),
-    JS_ITERATOR_NEXT_DEF("return", 1, js_generator_next, GEN_MAGIC_RETURN ),
-    JS_ITERATOR_NEXT_DEF("throw", 1, js_generator_next, GEN_MAGIC_THROW ),
-    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "Generator", JS_PROP_CONFIGURABLE),
-};
-
 /* Promise */
 
 typedef enum JSPromiseStateEnum {
@@ -39275,21 +38369,6 @@ static const JSCFunctionListEntry js_async_from_sync_iterator_proto_funcs[] = {
     JS_CFUNC_MAGIC_DEF("throw", 1, js_async_from_sync_iterator_next, GEN_MAGIC_THROW ),
 };
 
-/* AsyncGeneratorFunction */
-
-static const JSCFunctionListEntry js_async_generator_function_proto_funcs[] = {
-    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "AsyncGeneratorFunction", JS_PROP_CONFIGURABLE ),
-};
-
-/* AsyncGenerator prototype */
-
-static const JSCFunctionListEntry js_async_generator_proto_funcs[] = {
-    JS_CFUNC_MAGIC_DEF("next", 1, js_async_generator_next, GEN_MAGIC_NEXT ),
-    JS_CFUNC_MAGIC_DEF("return", 1, js_async_generator_next, GEN_MAGIC_RETURN ),
-    JS_CFUNC_MAGIC_DEF("throw", 1, js_async_generator_next, GEN_MAGIC_THROW ),
-    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "AsyncGenerator", JS_PROP_CONFIGURABLE ),
-};
-
 static JSClassShortDef const js_async_class_def[] = {
     { JS_ATOM_Promise, js_promise_finalizer, js_promise_mark },                      /* JS_CLASS_PROMISE */
     { JS_ATOM_PromiseResolveFunction, js_promise_resolve_function_finalizer, js_promise_resolve_function_mark }, /* JS_CLASS_PROMISE_RESOLVE_FUNCTION */
@@ -39298,8 +38377,6 @@ static JSClassShortDef const js_async_class_def[] = {
     { JS_ATOM_AsyncFunctionResolve, js_async_function_resolve_finalizer, js_async_function_resolve_mark }, /* JS_CLASS_ASYNC_FUNCTION_RESOLVE */
     { JS_ATOM_AsyncFunctionReject, js_async_function_resolve_finalizer, js_async_function_resolve_mark }, /* JS_CLASS_ASYNC_FUNCTION_REJECT */
     { JS_ATOM_empty_string, js_async_from_sync_iterator_finalizer, js_async_from_sync_iterator_mark }, /* JS_CLASS_ASYNC_FROM_SYNC_ITERATOR */
-    { JS_ATOM_AsyncGeneratorFunction, js_bytecode_function_finalizer, js_bytecode_function_mark },  /* JS_CLASS_ASYNC_GENERATOR_FUNCTION */
-    { JS_ATOM_AsyncGenerator, js_async_generator_finalizer, js_async_generator_mark },  /* JS_CLASS_ASYNC_GENERATOR */
 };
 
 void JS_AddIntrinsicPromise(JSContext *ctx)
@@ -39315,7 +38392,6 @@ void JS_AddIntrinsicPromise(JSContext *ctx)
         rt->class_array[JS_CLASS_ASYNC_FUNCTION].call = js_async_function_call;
         rt->class_array[JS_CLASS_ASYNC_FUNCTION_RESOLVE].call = js_async_function_resolve_call;
         rt->class_array[JS_CLASS_ASYNC_FUNCTION_REJECT].call = js_async_function_resolve_call;
-        rt->class_array[JS_CLASS_ASYNC_GENERATOR_FUNCTION].call = js_async_generator_function_call;
     }
 
     /* Promise */
@@ -39358,33 +38434,6 @@ void JS_AddIntrinsicPromise(JSContext *ctx)
     JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_ASYNC_FROM_SYNC_ITERATOR],
                                js_async_from_sync_iterator_proto_funcs,
                                countof(js_async_from_sync_iterator_proto_funcs));
-
-    /* AsyncGeneratorPrototype */
-    ctx->class_proto[JS_CLASS_ASYNC_GENERATOR] =
-        JS_NewObjectProto(ctx, ctx->async_iterator_proto);
-    JS_SetPropertyFunctionList(ctx,
-                               ctx->class_proto[JS_CLASS_ASYNC_GENERATOR],
-                               js_async_generator_proto_funcs,
-                               countof(js_async_generator_proto_funcs));
-
-    /* AsyncGeneratorFunction */
-    ctx->class_proto[JS_CLASS_ASYNC_GENERATOR_FUNCTION] =
-        JS_NewObjectProto(ctx, ctx->function_proto);
-    obj1 = JS_NewCFunction3(ctx, (JSCFunction *)js_function_constructor,
-                            "AsyncGeneratorFunction", 1,
-                            JS_CFUNC_constructor_or_func_magic,
-                            JS_FUNC_ASYNC_GENERATOR,
-                            ctx->function_ctor);
-    JS_SetPropertyFunctionList(ctx,
-                               ctx->class_proto[JS_CLASS_ASYNC_GENERATOR_FUNCTION],
-                               js_async_generator_function_proto_funcs,
-                               countof(js_async_generator_function_proto_funcs));
-    JS_SetConstructor2(ctx, ctx->class_proto[JS_CLASS_ASYNC_GENERATOR_FUNCTION],
-                       ctx->class_proto[JS_CLASS_ASYNC_GENERATOR],
-                       JS_PROP_CONFIGURABLE, JS_PROP_CONFIGURABLE);
-    JS_SetConstructor2(ctx, obj1, ctx->class_proto[JS_CLASS_ASYNC_GENERATOR_FUNCTION],
-                       0, JS_PROP_CONFIGURABLE);
-    JS_FreeValue(ctx, obj1);
 }
 
 /* URI handling */
@@ -40769,27 +39818,6 @@ void JS_AddIntrinsicBaseObjects(JSContext *ctx)
             str = p + 1;
         JS_DefinePropertyValueStr(ctx, obj, str, JS_AtomToValue(ctx, i), 0);
     }
-
-    /* ES6 Generator */
-    ctx->class_proto[JS_CLASS_GENERATOR] = JS_NewObjectProto(ctx, ctx->iterator_proto);
-    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_GENERATOR],
-                               js_generator_proto_funcs,
-                               countof(js_generator_proto_funcs));
-
-    ctx->class_proto[JS_CLASS_GENERATOR_FUNCTION] = JS_NewObjectProto(ctx, ctx->function_proto);
-    obj1 = JS_NewCFunctionMagic(ctx, js_function_constructor,
-                                "GeneratorFunction", 1,
-                                JS_CFUNC_constructor_or_func_magic, JS_FUNC_GENERATOR);
-    JS_SetPropertyFunctionList(ctx,
-                               ctx->class_proto[JS_CLASS_GENERATOR_FUNCTION],
-                               js_generator_function_proto_funcs,
-                               countof(js_generator_function_proto_funcs));
-    JS_SetConstructor2(ctx, ctx->class_proto[JS_CLASS_GENERATOR_FUNCTION],
-                       ctx->class_proto[JS_CLASS_GENERATOR],
-                       JS_PROP_CONFIGURABLE, JS_PROP_CONFIGURABLE);
-    JS_SetConstructor2(ctx, obj1, ctx->class_proto[JS_CLASS_GENERATOR_FUNCTION],
-                       0, JS_PROP_CONFIGURABLE);
-    JS_FreeValue(ctx, obj1);
 
     /* global properties */
     ctx->eval_obj = JS_NewCFunction(ctx, js_global_eval, "eval", 1);
