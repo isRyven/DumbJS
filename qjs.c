@@ -226,7 +226,6 @@ void js_std_loop(JSContext *ctx)
     }
 }
 
-
 // --------------------------------------------------------- //
 
 static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
@@ -269,14 +268,7 @@ static int eval_file(JSContext *ctx, const char *filename, int module)
         exit(1);
     }
 
-    if (module < 0) {
-        module = (has_suffix(filename, ".mjs") ||
-                  JS_DetectModule((const char *)buf, buf_len));
-    }
-    if (module)
-        eval_flags = JS_EVAL_TYPE_MODULE;
-    else
-        eval_flags = JS_EVAL_TYPE_GLOBAL;
+    eval_flags = JS_EVAL_TYPE_GLOBAL;
     ret = eval_buf(ctx, buf, buf_len, filename, eval_flags);
     js_free(ctx, buf);
     return ret;
@@ -580,9 +572,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "qjs: cannot allocate JS context\n");
         exit(2);
     }
-    
-    /* loader for ES6 modules */
-    // JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
 
     if (dump_unhandled_promise_rejection) {
         JS_SetHostPromiseRejectionTracker(rt, js_std_promise_rejection_tracker,

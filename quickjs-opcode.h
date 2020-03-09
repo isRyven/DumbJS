@@ -120,7 +120,6 @@ DEF(         regexp, 1, 2, 1, none) /* create a RegExp object from the pattern a
                                        bytecode string */
 DEF( get_super_ctor, 1, 1, 1, none)
 DEF(      get_super, 1, 1, 1, none)
-DEF(         import, 1, 1, 1, none) /* dynamic module import */
 
 DEF(      check_var, 5, 0, 1, atom) /* check if a variable exists */
 DEF(  get_var_undef, 5, 0, 1, atom) /* push undefined if the variable does not exist */

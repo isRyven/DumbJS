@@ -738,7 +738,6 @@ JSValue JS_CallConstructor(JSContext *ctx, JSValueConst func_obj,
 JSValue JS_CallConstructor2(JSContext *ctx, JSValueConst func_obj,
                             JSValueConst new_target,
                             int argc, JSValueConst *argv);
-JS_BOOL JS_DetectModule(const char *input, size_t input_len);
 /* 'input' must be zero terminated i.e. input[input_len] = '\0'. */
 JSValue JS_Eval(JSContext *ctx, const char *input, size_t input_len,
                 const char *filename, int eval_flags);
@@ -781,25 +780,6 @@ void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque)
 /* if can_block is TRUE, Atomics.wait() can be used */
 void JS_SetCanBlock(JSRuntime *rt, JS_BOOL can_block);
 
-typedef struct JSModuleDef JSModuleDef;
-
-/* return the module specifier (allocated with js_malloc()) or NULL if
-   exception */
-typedef char *JSModuleNormalizeFunc(JSContext *ctx,
-                                    const char *module_base_name,
-                                    const char *module_name, void *opaque);
-typedef JSModuleDef *JSModuleLoaderFunc(JSContext *ctx,
-                                        const char *module_name, void *opaque);
-
-/* module_normalize = NULL is allowed and invokes the default module
-   filename normalizer */
-void JS_SetModuleLoaderFunc(JSRuntime *rt,
-                            JSModuleNormalizeFunc *module_normalize,
-                            JSModuleLoaderFunc *module_loader, void *opaque);
-/* return the import.meta object of a module */
-JSValue JS_GetImportMeta(JSContext *ctx, JSModuleDef *m);
-JSAtom JS_GetModuleName(JSContext *ctx, JSModuleDef *m);
-
 /* JS Job support */
 
 typedef JSValue JSJobFunc(JSContext *ctx, int argc, JSValueConst *argv);
@@ -817,9 +797,6 @@ uint8_t *JS_WriteObject(JSContext *ctx, size_t *psize, JSValueConst obj,
 #define JS_READ_OBJ_ROM_DATA  (1 << 1) /* avoid duplicating 'buf' data */
 JSValue JS_ReadObject(JSContext *ctx, const uint8_t *buf, size_t buf_len,
                       int flags);
-/* load the dependencies of the module 'obj'. Useful when JS_ReadObject()
-   returns a module. */
-int JS_ResolveModule(JSContext *ctx, JSValueConst obj);
 
 /* C function definition */
 typedef enum JSCFunctionEnum {  /* XXX: should rename for namespace isolation */
@@ -938,22 +915,6 @@ typedef struct JSCFunctionListEntry {
 void JS_SetPropertyFunctionList(JSContext *ctx, JSValueConst obj,
                                 const JSCFunctionListEntry *tab,
                                 int len);
-
-/* C module definition */
-
-typedef int JSModuleInitFunc(JSContext *ctx, JSModuleDef *m);
-
-JSModuleDef *JS_NewCModule(JSContext *ctx, const char *name_str,
-                           JSModuleInitFunc *func);
-/* can only be called before the module is instantiated */
-int JS_AddModuleExport(JSContext *ctx, JSModuleDef *m, const char *name_str);
-int JS_AddModuleExportList(JSContext *ctx, JSModuleDef *m,
-                           const JSCFunctionListEntry *tab, int len);
-/* can only be called after the module is instantiated */
-int JS_SetModuleExport(JSContext *ctx, JSModuleDef *m, const char *export_name,
-                       JSValue val);
-int JS_SetModuleExportList(JSContext *ctx, JSModuleDef *m,
-                           const JSCFunctionListEntry *tab, int len);
 
 #undef js_unlikely
 #undef js_force_inline
