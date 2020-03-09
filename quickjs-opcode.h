@@ -109,16 +109,12 @@ DEF(          apply, 3, 3, 1, u16)
 DEF(         return, 1, 1, 0, none)
 DEF(   return_undef, 1, 0, 0, none)
 DEF(check_ctor_return, 1, 1, 2, none)
-DEF(     check_ctor, 1, 0, 0, none)
-DEF(    check_brand, 1, 2, 2, none) /* this_obj func -> this_obj func */
-DEF(      add_brand, 1, 2, 0, none) /* this_obj home_obj -> */
 DEF(          throw, 1, 1, 0, none)
 DEF(      throw_var, 6, 0, 0, atom_u8)
 DEF(           eval, 5, 1, 1, npop_u16) /* func args... -> ret_val */
 DEF(     apply_eval, 3, 2, 1, u16) /* func array -> ret_eval */
 DEF(         regexp, 1, 2, 1, none) /* create a RegExp object from the pattern and a
                                        bytecode string */
-DEF( get_super_ctor, 1, 1, 1, none)
 DEF(      get_super, 1, 1, 1, none)
 
 DEF(      check_var, 5, 0, 1, atom) /* check if a variable exists */
@@ -137,9 +133,6 @@ DEF(    define_func, 6, 1, 0, atom_u8)
 DEF(      get_field, 5, 1, 1, atom)
 DEF(     get_field2, 5, 1, 2, atom)
 DEF(      put_field, 5, 2, 0, atom)
-DEF( get_private_field, 1, 2, 1, none) /* obj prop -> value */
-DEF( put_private_field, 1, 3, 0, none) /* obj value prop -> */
-DEF(define_private_field, 1, 3, 1, none) /* obj prop value -> obj */
 DEF(   get_array_el, 1, 2, 1, none)
 DEF(  get_array_el2, 1, 2, 2, none) /* obj prop -> obj value */
 DEF(   put_array_el, 1, 3, 0, none)
@@ -155,8 +148,6 @@ DEF(         append, 1, 3, 2, none) /* append enumerated object, update length *
 DEF(copy_data_properties, 2, 3, 3, u8)
 DEF(  define_method, 6, 2, 1, atom_u8)
 DEF(define_method_computed, 2, 3, 1, u8) /* must come after define_method */
-DEF(   define_class, 6, 2, 2, atom_u8) /* parent ctor -> ctor proto */
-DEF(   define_class_computed, 6, 3, 3, atom_u8) /* field_name parent ctor -> field_name ctor proto (class with computed name) */
 
 DEF(        get_loc, 3, 0, 1, loc)
 DEF(        put_loc, 3, 1, 0, loc) /* must come after get_loc */
