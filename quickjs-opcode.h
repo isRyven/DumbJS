@@ -69,7 +69,6 @@ DEF(       push_i32, 5, 0, 1, i32)
 DEF(     push_const, 5, 0, 1, const)
 DEF(       fclosure, 5, 0, 1, const) /* must follow push_const */
 DEF(push_atom_value, 5, 0, 1, atom)
-DEF( private_symbol, 5, 0, 1, atom)
 DEF(      undefined, 1, 0, 1, none)
 DEF(           null, 1, 0, 1, none)
 DEF(      push_this, 1, 0, 1, none) /* only used at the start of a function */

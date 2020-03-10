@@ -798,7 +798,6 @@ static void js_c_function_data_mark(JSRuntime *rt, JSValueConst val,
 static JSValue js_c_function_data_call(JSContext *ctx, JSValueConst func_obj,
                                        JSValueConst this_val,
                                        int argc, JSValueConst *argv, int flags);
-static JSAtom js_symbol_to_atom(JSContext *ctx, JSValue val);
 static void add_gc_object(JSRuntime *rt, JSGCObjectHeader *h,
                           JSGCObjectTypeEnum type);
 static void remove_gc_object(JSGCObjectHeader *h);
@@ -2305,31 +2304,6 @@ static JSAtom JS_NewAtomInt64(JSContext *ctx, int64_t n)
         return __JS_NewAtom(ctx->rt, JS_VALUE_GET_STRING(val),
                             JS_ATOM_TYPE_STRING);
     }
-}
-
-/* 'p' is freed */
-static JSValue JS_NewSymbol(JSContext *ctx, JSString *p, int atom_type)
-{
-    JSRuntime *rt = ctx->rt;
-    JSAtom atom;
-    atom = __JS_NewAtom(rt, p, atom_type);
-    if (atom == JS_ATOM_NULL)
-        return JS_ThrowOutOfMemory(ctx);
-    return JS_MKPTR(JS_TAG_SYMBOL, rt->atom_array[atom]);
-}
-
-/* descr must be a non-numeric string atom */
-static JSValue JS_NewSymbolFromAtom(JSContext *ctx, JSAtom descr,
-                                    int atom_type)
-{
-    JSRuntime *rt = ctx->rt;
-    JSString *p;
-
-    assert(!__JS_AtomIsTaggedInt(descr));
-    assert(descr < rt->atom_size);
-    p = rt->atom_array[descr];
-    JS_DupValue(ctx, JS_MKPTR(JS_TAG_STRING, p));
-    return JS_NewSymbol(ctx, p, atom_type);
 }
 
 #define ATOM_GET_STR_BUF_SIZE 64
@@ -5679,9 +5653,6 @@ JSValueConst JS_GetPrototype(JSContext *ctx, JSValueConst val)
     case JS_TAG_STRING:
         val = ctx->class_proto[JS_CLASS_STRING];
         break;
-    case JS_TAG_SYMBOL:
-        val = ctx->class_proto[JS_CLASS_SYMBOL];
-        break;
     case JS_TAG_OBJECT:
         p = JS_VALUE_GET_OBJ(val);
         p = p->shape->proto;
@@ -6269,13 +6240,6 @@ int JS_HasProperty(JSContext *ctx, JSValueConst obj, JSAtom prop)
     return FALSE;
 }
 
-/* val must be a symbol */
-static JSAtom js_symbol_to_atom(JSContext *ctx, JSValue val)
-{
-    JSAtomStruct *p = JS_VALUE_GET_PTR(val);
-    return js_get_atom_index(ctx->rt, p);
-}
-
 /* return JS_ATOM_NULL in case of exception */
 JSAtom JS_ValueToAtom(JSContext *ctx, JSValueConst val)
 {
@@ -6286,19 +6250,12 @@ JSAtom JS_ValueToAtom(JSContext *ctx, JSValueConst val)
         (uint32_t)JS_VALUE_GET_INT(val) <= JS_ATOM_MAX_INT) {
         /* fast path for integer values */
         atom = __JS_AtomFromUInt32(JS_VALUE_GET_INT(val));
-    } else if (tag == JS_TAG_SYMBOL) {
-        JSAtomStruct *p = JS_VALUE_GET_PTR(val);
-        atom = JS_DupAtom(ctx, js_get_atom_index(ctx->rt, p));
     } else {
         JSValue str;
         str = JS_ToPropertyKey(ctx, val);
         if (JS_IsException(str))
             return JS_ATOM_NULL;
-        if (JS_VALUE_GET_TAG(str) == JS_TAG_SYMBOL) {
-            atom = js_symbol_to_atom(ctx, str);
-        } else {
-            atom = JS_NewAtomStr(ctx, JS_VALUE_GET_STRING(str));
-        }
+        atom = JS_NewAtomStr(ctx, JS_VALUE_GET_STRING(str));
     }
     return atom;
 }
@@ -8499,9 +8456,6 @@ static JSValue JS_ToNumberHintFree(JSContext *ctx, JSValue val,
             JS_FreeCString(ctx, str);
         }
         break;
-    case JS_TAG_SYMBOL:
-        JS_FreeValue(ctx, val);
-        return JS_ThrowTypeError(ctx, "cannot convert symbol to number");
     default:
         JS_FreeValue(ctx, val);
         ret = JS_NAN;
@@ -9245,12 +9199,6 @@ JSValue JS_ToStringInternal(JSContext *ctx, JSValueConst val, BOOL is_ToProperty
     case JS_TAG_FUNCTION_BYTECODE:
         str = "[function bytecode]";
         goto new_string;
-    case JS_TAG_SYMBOL:
-        if (is_ToPropertyKey) {
-            return JS_DupValue(ctx, val);
-        } else {
-            return JS_ThrowTypeError(ctx, "cannot convert symbol to string");
-        }
     case JS_TAG_FLOAT64:
         return js_dtoa(ctx, JS_VALUE_GET_FLOAT64(val), 10, 0,
                        JS_DTOA_VAR_FORMAT);
@@ -9532,14 +9480,6 @@ static __maybe_unused void JS_DumpValueShort(JSRuntime *rt,
             char atom_buf[ATOM_GET_STR_BUF_SIZE];
             printf("[%s %p]",
                    JS_AtomGetStrRT(rt, atom_buf, sizeof(atom_buf), atom), (void *)p);
-        }
-        break;
-    case JS_TAG_SYMBOL:
-        {
-            JSAtomStruct *p = JS_VALUE_GET_PTR(val);
-            char atom_buf[ATOM_GET_STR_BUF_SIZE];
-            printf("Symbol(%s)",
-                   JS_AtomGetStrRT(rt, atom_buf, sizeof(atom_buf), js_get_atom_index(rt, p)));
         }
         break;
     default:
@@ -9890,7 +9830,7 @@ static no_inline __exception int js_eq_slow(JSContext *ctx, JSValue *sp,
         op2 = JS_NewInt32(ctx, JS_VALUE_GET_INT(op2));
         goto redo;
     } else if (tag1 == JS_TAG_OBJECT &&
-               (tag2 == JS_TAG_INT || tag2 == JS_TAG_FLOAT64 || tag2 == JS_TAG_STRING || tag2 == JS_TAG_SYMBOL)) {
+               (tag2 == JS_TAG_INT || tag2 == JS_TAG_FLOAT64 || tag2 == JS_TAG_STRING)) {
         op1 = JS_ToPrimitiveFree(ctx, op1, HINT_NONE);
         if (JS_IsException(op1)) {
             JS_FreeValue(ctx, op2);
@@ -9898,7 +9838,7 @@ static no_inline __exception int js_eq_slow(JSContext *ctx, JSValue *sp,
         }
         goto redo;
     } else if (tag2 == JS_TAG_OBJECT &&
-               (tag1 == JS_TAG_INT || tag1 == JS_TAG_FLOAT64 || tag1 == JS_TAG_STRING || tag1 == JS_TAG_SYMBOL)) {
+               (tag1 == JS_TAG_INT || tag1 == JS_TAG_FLOAT64 || tag1 == JS_TAG_STRING)) {
         op2 = JS_ToPrimitiveFree(ctx, op2, HINT_NONE);
         if (JS_IsException(op2)) {
             JS_FreeValue(ctx, op1);
@@ -9972,18 +9912,6 @@ static BOOL js_strict_eq2(JSContext *ctx, JSValue op1, JSValue op2,
                 p1 = JS_VALUE_GET_STRING(op1);
                 p2 = JS_VALUE_GET_STRING(op2);
                 res = (js_string_compare(ctx, p1, p2) == 0);
-            }
-        }
-        break;
-    case JS_TAG_SYMBOL:
-        {
-            JSAtomStruct *p1, *p2;
-            if (tag1 != tag2) {
-                res = FALSE;
-            } else {
-                p1 = JS_VALUE_GET_PTR(op1);
-                p2 = JS_VALUE_GET_PTR(op2);
-                res = (p1 == p2);
             }
         }
         break;
@@ -10152,9 +10080,6 @@ static __exception int js_operator_typeof(JSContext *ctx, JSValue op1)
     case JS_TAG_NULL:
     obj_type:
         atom = JS_ATOM_object;
-        break;
-    case JS_TAG_SYMBOL:
-        atom = JS_ATOM_symbol;
         break;
     default:
         atom = JS_ATOM_unknown;
@@ -12577,19 +12502,6 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
             }
             BREAK;
 
-        CASE(OP_private_symbol):
-            {
-                JSAtom atom;
-                JSValue val;
-                
-                atom = get_u32(pc);
-                pc += 4;
-                val = JS_NewSymbolFromAtom(ctx, atom, JS_ATOM_TYPE_PRIVATE);
-                if (JS_IsException(val))
-                    goto exception;
-                *sp++ = val;
-            }
-            BREAK;
 
         CASE(OP_define_field):
             {
@@ -13359,7 +13271,6 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
             switch (JS_VALUE_GET_TAG(sp[-1])) {
             case JS_TAG_INT:
             case JS_TAG_STRING:
-            case JS_TAG_SYMBOL:
                 break;
             default:
                 ret_val = JS_ToPropertyKey(ctx, sp[-1]);
@@ -13380,7 +13291,6 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
             switch (JS_VALUE_GET_TAG(sp[-1])) {
             case JS_TAG_INT:
             case JS_TAG_STRING:
-            case JS_TAG_SYMBOL:
                 break;
             default:
                 ret_val = JS_ToPropertyKey(ctx, sp[-1]);
@@ -25229,8 +25139,6 @@ static JSValue JS_ToObject(JSContext *ctx, JSValueConst val)
     case JS_TAG_BOOL:
         obj = JS_NewObjectClass(ctx, JS_CLASS_BOOLEAN);
         goto set_value;
-    case JS_TAG_SYMBOL:
-        obj = JS_NewObjectClass(ctx, JS_CLASS_SYMBOL);
     set_value:
         if (!JS_IsException(obj))
             JS_SetObjectData(ctx, obj, JS_DupValue(ctx, val));
@@ -32809,117 +32717,6 @@ void JS_AddIntrinsicJSON(JSContext *ctx)
     JS_SetPropertyFunctionList(ctx, ctx->global_obj, js_json_obj, countof(js_json_obj));
 }
 
-/* Symbol */
-
-static JSValue js_symbol_constructor(JSContext *ctx, JSValueConst new_target,
-                                     int argc, JSValueConst *argv)
-{
-    JSValue str;
-    JSString *p;
-
-    if (!JS_IsUndefined(new_target))
-        return JS_ThrowTypeError(ctx, "not a constructor");
-    if (argc == 0 || JS_IsUndefined(argv[0])) {
-        p = NULL;
-    } else {
-        str = JS_ToString(ctx, argv[0]);
-        if (JS_IsException(str))
-            return JS_EXCEPTION;
-        p = JS_VALUE_GET_STRING(str);
-    }
-    return JS_NewSymbol(ctx, p, JS_ATOM_TYPE_SYMBOL);
-}
-
-static JSValue js_thisSymbolValue(JSContext *ctx, JSValueConst this_val)
-{
-    if (JS_VALUE_GET_TAG(this_val) == JS_TAG_SYMBOL)
-        return JS_DupValue(ctx, this_val);
-
-    if (JS_VALUE_GET_TAG(this_val) == JS_TAG_OBJECT) {
-        JSObject *p = JS_VALUE_GET_OBJ(this_val);
-        if (p->class_id == JS_CLASS_SYMBOL) {
-            if (JS_VALUE_GET_TAG(p->u.object_data) == JS_TAG_SYMBOL)
-                return JS_DupValue(ctx, p->u.object_data);
-        }
-    }
-    return JS_ThrowTypeError(ctx, "not a symbol");
-}
-
-static JSValue js_symbol_toString(JSContext *ctx, JSValueConst this_val,
-                                  int argc, JSValueConst *argv)
-{
-    JSValue val, ret;
-    val = js_thisSymbolValue(ctx, this_val);
-    if (JS_IsException(val))
-        return val;
-    /* XXX: use JS_ToStringInternal() with a flags */
-    ret = js_string_constructor(ctx, JS_UNDEFINED, 1, (JSValueConst *)&val);
-    JS_FreeValue(ctx, val);
-    return ret;
-}
-
-static JSValue js_symbol_valueOf(JSContext *ctx, JSValueConst this_val,
-                                 int argc, JSValueConst *argv)
-{
-    return js_thisSymbolValue(ctx, this_val);
-}
-
-static JSValue js_symbol_get_description(JSContext *ctx, JSValueConst this_val)
-{
-    JSValue val, ret;
-    JSAtomStruct *p;
-
-    val = js_thisSymbolValue(ctx, this_val);
-    if (JS_IsException(val))
-        return val;
-    p = JS_VALUE_GET_PTR(val);
-    if (p->len == 0 && p->is_wide_char != 0) {
-        ret = JS_UNDEFINED;
-    } else {
-        ret = JS_AtomToString(ctx, js_get_atom_index(ctx->rt, p));
-    }
-    JS_FreeValue(ctx, val);
-    return ret;
-}
-
-static const JSCFunctionListEntry js_symbol_proto_funcs[] = {
-    JS_CFUNC_DEF("toString", 0, js_symbol_toString ),
-    JS_CFUNC_DEF("valueOf", 0, js_symbol_valueOf ),
-    // XXX: should have writable: false
-    JS_CFUNC_DEF("[Symbol.toPrimitive]", 1, js_symbol_valueOf ),
-    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "Symbol", JS_PROP_CONFIGURABLE ),
-    JS_CGETSET_DEF("description", js_symbol_get_description, NULL ),
-};
-
-static JSValue js_symbol_for(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv)
-{
-    JSValue str;
-
-    str = JS_ToString(ctx, argv[0]);
-    if (JS_IsException(str))
-        return JS_EXCEPTION;
-    return JS_NewSymbol(ctx, JS_VALUE_GET_STRING(str), JS_ATOM_TYPE_GLOBAL_SYMBOL);
-}
-
-static JSValue js_symbol_keyFor(JSContext *ctx, JSValueConst this_val,
-                                int argc, JSValueConst *argv)
-{
-    JSAtomStruct *p;
-
-    if (!JS_IsSymbol(argv[0]))
-        return JS_ThrowTypeError(ctx, "not a symbol");
-    p = JS_VALUE_GET_PTR(argv[0]);
-    if (p->atom_type != JS_ATOM_TYPE_GLOBAL_SYMBOL)
-        return JS_UNDEFINED;
-    return JS_DupValue(ctx, JS_MKPTR(JS_TAG_STRING, p));
-}
-
-static const JSCFunctionListEntry js_symbol_funcs[] = {
-    JS_CFUNC_DEF("for", 1, js_symbol_for ),
-    JS_CFUNC_DEF("keyFor", 1, js_symbol_keyFor ),
-};
-
 /* Promise */
 
 typedef enum JSPromiseStateEnum {
@@ -35304,25 +35101,6 @@ void JS_AddIntrinsicBaseObjects(JSContext *ctx)
     /* Math: create as autoinit object */
     js_random_init(ctx);
     JS_SetPropertyFunctionList(ctx, ctx->global_obj, js_math_obj, countof(js_math_obj));
-
-    /* ES6 Symbol */
-    ctx->class_proto[JS_CLASS_SYMBOL] = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_SYMBOL], js_symbol_proto_funcs,
-                               countof(js_symbol_proto_funcs));
-    obj = JS_NewGlobalCConstructor(ctx, "Symbol", js_symbol_constructor, 0,
-                                   ctx->class_proto[JS_CLASS_SYMBOL]);
-    JS_SetPropertyFunctionList(ctx, obj, js_symbol_funcs,
-                               countof(js_symbol_funcs));
-    for(i = JS_ATOM_Symbol_toPrimitive; i < JS_ATOM_END; i++) {
-        char buf[ATOM_GET_STR_BUF_SIZE];
-        const char *str, *p;
-        str = JS_AtomGetStr(ctx, buf, sizeof(buf), i);
-        /* skip "Symbol." */
-        p = strchr(str, '.');
-        if (p)
-            str = p + 1;
-        JS_DefinePropertyValueStr(ctx, obj, str, JS_AtomToValue(ctx, i), 0);
-    }
 
     /* global properties */
     ctx->eval_obj = JS_NewCFunction(ctx, js_global_eval, "eval", 1);
