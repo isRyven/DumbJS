@@ -13969,7 +13969,6 @@ static void free_token(JSParseState *s, JSToken *token)
 {
     switch(token->val) {
     case TOK_STRING:
-    case TOK_TEMPLATE:
         JS_FreeValue(s->ctx, token->u.str.str);
         break;
     case TOK_REGEXP:
@@ -14011,14 +14010,6 @@ static void __attribute((unused)) dump_token(JSParseState *s,
             /* XXX: quote the string */
             str = JS_ToCString(s->ctx, token->u.str.str);
             printf("string: '%s'\n", str);
-            JS_FreeCString(s->ctx, str);
-        }
-        break;
-    case TOK_TEMPLATE:
-        {
-            const char *str;
-            str = JS_ToCString(s->ctx, token->u.str.str);
-            printf("template: `%s`\n", str);
             JS_FreeCString(s->ctx, str);
         }
         break;
@@ -14093,67 +14084,6 @@ static int js_parse_error_reserved_identifier(JSParseState *s)
                                         s->token.u.ident.atom));
 }
 
-static __exception int js_parse_template_part(JSParseState *s, const uint8_t *p)
-{
-    uint32_t c;
-    StringBuffer b_s, *b = &b_s;
-
-    /* p points to the first byte of the template part */
-    if (string_buffer_init(s->ctx, b, 32))
-        goto fail;
-    for(;;) {
-        if (p >= s->buf_end)
-            goto unexpected_eof;
-        c = *p++;
-        if (c == '`') {
-            /* template end part */
-            break;
-        }
-        if (c == '$' && *p == '{') {
-            /* template start or middle part */
-            p++;
-            break;
-        }
-        if (c == '\\') {
-            if (string_buffer_putc8(b, c))
-                goto fail;
-            if (p >= s->buf_end)
-                goto unexpected_eof;
-            c = *p++;
-        }
-        /* newline sequences are normalized as single '\n' bytes */
-        if (c == '\r') {
-            if (*p == '\n')
-                p++;
-            c = '\n';
-        }
-        if (c == '\n') {
-            s->line_num++;
-        } else if (c >= 0x80) {
-            const uint8_t *p_next;
-            c = unicode_from_utf8(p - 1, UTF8_CHAR_LEN_MAX, &p_next);
-            if (c > 0x10FFFF) {
-                js_parse_error(s, "invalid UTF-8 sequence");
-                goto fail;
-            }
-            p = p_next;
-        }
-        if (string_buffer_putc(b, c))
-            goto fail;
-    }
-    s->token.val = TOK_TEMPLATE;
-    s->token.u.str.sep = c;
-    s->token.u.str.str = string_buffer_end(b);
-    s->buf_ptr = p;
-    return 0;
-
- unexpected_eof:
-    js_parse_error(s, "unexpected end of string");
- fail:
-    string_buffer_free(b);
-    return -1;
-}
-
 static __exception int js_parse_string(JSParseState *s, int sep,
                                        BOOL do_throw, const uint8_t *p,
                                        JSToken *token, const uint8_t **pp)
@@ -14175,24 +14105,12 @@ static __exception int js_parse_string(JSParseState *s, int sep,
                     js_parse_error(s, "invalid character in a JSON string");
                 goto fail;
             }
-            if (sep == '`') {
-                if (c == '\r') {
-                    if (p[1] == '\n')
-                        p++;
-                    c = '\n';
-                }
-                /* do not update s->line_num */
-            } else if (c == '\n' || c == '\r')
+            if (c == '\n' || c == '\r')
                 goto invalid_char;
         }
         p++;
         if (c == sep)
             break;
-        if (c == '$' && *p == '{' && sep == '`') {
-            /* template start or middle part */
-            p++;
-            break;
-        }
         if (c == '\\') {
             c = *p;
             switch(c) {
@@ -14214,8 +14132,6 @@ static __exception int js_parse_string(JSParseState *s, int sep,
             case '\n':
                 /* ignore escaped newline sequence */
                 p++;
-                if (sep != '`')
-                    s->line_num++;
                 continue;
             default:
                 if (c >= '0' && c <= '7') {
@@ -14412,15 +14328,6 @@ static __exception int next_token(JSParseState *s)
     switch(c) {
     case 0:
         s->token.val = TOK_EOF;
-        break;
-    case '`':
-        if (!s->cur_func) {
-            /* JSON does not accept templates */
-            goto def_token;
-        }
-        if (js_parse_template_part(s, p + 1))
-            goto fail;
-        p = s->buf_ptr;
         break;
     case '\'':
         if (!s->cur_func) {
@@ -15522,133 +15429,6 @@ static void push_break_entry(JSFunctionDef *fd, BlockEnv *be,
                              int label_break, int label_cont,
                              int drop_count);
 static void pop_break_entry(JSFunctionDef *fd);
-
-/* Note: all the fields are already sealed except length */
-static int seal_template_obj(JSContext *ctx, JSValueConst obj)
-{
-    JSObject *p;
-    JSShapeProperty *prs;
-
-    p = JS_VALUE_GET_OBJ(obj);
-    prs = find_own_property1(p, JS_ATOM_length);
-    if (prs) {
-        if (js_update_property_flags(ctx, p, &prs,
-                                     prs->flags & ~(JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE)))
-            return -1;
-    }
-    p->extensible = FALSE;
-    return 0;
-}
-
-static __exception int js_parse_template(JSParseState *s, int call, int *argc)
-{
-    JSContext *ctx = s->ctx;
-    JSValue raw_array, template_object;
-    JSToken cooked;
-    int depth, ret;
-
-    raw_array = JS_UNDEFINED; /* avoid warning */
-    template_object = JS_UNDEFINED; /* avoid warning */
-    if (call) {
-        /* Create a template object: an array of cooked strings */
-        /* Create an array of raw strings and store it to the raw property */
-        template_object = JS_NewArray(ctx);
-        if (JS_IsException(template_object))
-            return -1;
-        //        pool_idx = s->cur_func->cpool_count;
-        ret = emit_push_const(s, template_object, 0);
-        JS_FreeValue(ctx, template_object);
-        if (ret)
-            return -1;
-        raw_array = JS_NewArray(ctx);
-        if (JS_IsException(raw_array))
-            return -1;
-        if (JS_DefinePropertyValue(ctx, template_object, JS_ATOM_raw,
-                                   raw_array, JS_PROP_THROW) < 0) {
-            return -1;
-        }
-    }
-
-    depth = 0;
-    while (s->token.val == TOK_TEMPLATE) {
-        const uint8_t *p = s->token.ptr + 1;
-        cooked = s->token;
-        if (call) {
-            if (JS_DefinePropertyValueUint32(ctx, raw_array, depth,
-                                             JS_DupValue(ctx, s->token.u.str.str),
-                                             JS_PROP_ENUMERABLE | JS_PROP_THROW) < 0) {
-                return -1;
-            }
-            /* re-parse the string with escape sequences but do not throw a
-               syntax error if it contains invalid sequences
-             */
-            if (js_parse_string(s, '`', FALSE, p, &cooked, &p)) {
-                cooked.u.str.str = JS_UNDEFINED;
-            }
-            if (JS_DefinePropertyValueUint32(ctx, template_object, depth,
-                                             cooked.u.str.str,
-                                             JS_PROP_ENUMERABLE | JS_PROP_THROW) < 0) {
-                return -1;
-            }
-        } else {
-            JSString *str;
-            /* re-parse the string with escape sequences and throw a
-               syntax error if it contains invalid sequences
-             */
-            JS_FreeValue(ctx, s->token.u.str.str);
-            s->token.u.str.str = JS_UNDEFINED;
-            if (js_parse_string(s, '`', TRUE, p, &cooked, &p))
-                return -1;
-            str = JS_VALUE_GET_STRING(cooked.u.str.str);
-            if (str->len != 0 || depth == 0) {
-                ret = emit_push_const(s, cooked.u.str.str, 1);
-                JS_FreeValue(s->ctx, cooked.u.str.str);
-                if (ret)
-                    return -1;
-                if (depth == 0) {
-                    if (s->token.u.str.sep == '`')
-                        goto done1;
-                    emit_op(s, OP_get_field2);
-                    emit_atom(s, JS_ATOM_concat);
-                }
-                depth++;
-            } else {
-                JS_FreeValue(s->ctx, cooked.u.str.str);
-            }
-        }
-        if (s->token.u.str.sep == '`')
-            goto done;
-        if (next_token(s))
-            return -1;
-        if (js_parse_assign_expr(s, TRUE))
-            return -1;
-        depth++;
-        if (s->token.val != '}') {
-            return js_parse_error(s, "expected '}' after template expression");
-        }
-        /* XXX: should convert to string at this stage? */
-        free_token(s, &s->token);
-        /* Resume TOK_TEMPLATE parsing (s->token.line_num and s->token.ptr are OK) */
-        s->got_lf = FALSE;
-        s->last_line_num = s->token.line_num;
-        if (js_parse_template_part(s, s->buf_ptr))
-            return -1;
-    }
-    return js_parse_expect(s, TOK_TEMPLATE);
-
- done:
-    if (call) {
-        /* Seal the objects */
-        seal_template_obj(ctx, raw_array);
-        seal_template_obj(ctx, template_object);
-        *argc = depth + 1;
-    } else {
-        emit_op(s, OP_call_method);
-        emit_u16(s, depth - 1);
-    }
- done1:
-    return next_token(s);
-}
 
 
 #define PROP_TYPE_IDENT 0
@@ -16916,8 +16696,7 @@ static int js_parse_destructing_element(JSParseState *s, int tok, int is_arg,
 
 typedef enum FuncCallType {
     FUNC_CALL_NORMAL,
-    FUNC_CALL_NEW,
-    FUNC_CALL_TEMPLATE,
+    FUNC_CALL_NEW
 } FuncCallType;
 
 static void optional_chain_test(JSParseState *s, int *poptional_chaining_label,
@@ -16959,10 +16738,6 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
             }
         }
         if (next_token(s))
-            return -1;
-        break;
-    case TOK_TEMPLATE:
-        if (js_parse_template(s, 0, NULL))
             return -1;
         break;
     case TOK_STRING:
@@ -17147,13 +16922,6 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
             } else {
                 goto parse_property;
             }
-        } else if (s->token.val == TOK_TEMPLATE &&
-                   call_type == FUNC_CALL_NORMAL) {
-            if (optional_chaining_label >= 0) {
-                return js_parse_error(s, "template literal cannot appear in an optional chain");
-            }
-            call_type = FUNC_CALL_TEMPLATE;
-            goto parse_func_call2;
         } else if (s->token.val == '(' && accept_lparen) {
             int opcode, arg_count, drop_count;
 
@@ -17163,7 +16931,6 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
                 return -1;
 
             if (call_type == FUNC_CALL_NORMAL) {
-            parse_func_call2:
                 switch(opcode = get_prev_opcode(fd)) {
                 case OP_get_field:
                     /* keep the object on the stack */
@@ -17225,11 +16992,7 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
                 opcode = OP_invalid;
             }
 
-            if (call_type == FUNC_CALL_TEMPLATE) {
-                if (js_parse_template(s, 1, &arg_count))
-                    return -1;
-                goto emit_func_call;
-            } else if (call_type == FUNC_CALL_NEW) {
+            if (call_type == FUNC_CALL_NEW) {
                 emit_op(s, OP_dup); /* new.target = function */
             }
 
@@ -17343,7 +17106,6 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
             } else {
                 if (next_token(s))
                     return -1;
-            emit_func_call:
                 switch(opcode) {
                 case OP_get_field:
                 case OP_scope_get_private_field:
