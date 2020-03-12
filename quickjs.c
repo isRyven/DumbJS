@@ -15394,8 +15394,6 @@ static int define_var(JSParseState *s, JSFunctionDef *fd, JSAtom name,
         idx = add_scope_var(ctx, fd, name, JS_VAR_NORMAL);
         break;
 
-    case JS_VAR_DEF_LET:
-    case JS_VAR_DEF_CONST:
     case JS_VAR_DEF_FUNCTION_DECL:
     case JS_VAR_DEF_NEW_FUNCTION_DECL:
         idx = find_lexical_decl(ctx, fd, name, fd->scope_first, TRUE);
@@ -15448,7 +15446,7 @@ static int define_var(JSParseState *s, JSFunctionDef *fd, JSAtom name,
             hf = add_hoisted_def(s->ctx, fd, -1, name, -1, TRUE);
             if (!hf)
                 return -1;
-            hf->is_const = (var_def_type == JS_VAR_DEF_CONST);
+            hf->is_const = FALSE;
             idx = GLOBAL_VAR_OFFSET;
         } else {
             JSVarKindEnum var_kind;
@@ -15462,7 +15460,7 @@ static int define_var(JSParseState *s, JSFunctionDef *fd, JSAtom name,
             if (idx >= 0) {
                 vd = &fd->vars[idx];
                 vd->is_lexical = 1;
-                vd->is_const = (var_def_type == JS_VAR_DEF_CONST);
+                vd->is_const = FALSE;
             }
         }
         break;
@@ -16374,8 +16372,7 @@ static void put_lvalue_nokeep(JSParseState *s, int opcode, int scope,
 {
     switch(opcode) {
     case OP_scope_get_var:  /* val -- */
-        emit_op(s, (var_tok == TOK_CONST || var_tok == TOK_LET) ?
-                OP_scope_put_var_init : OP_scope_put_var);
+        emit_op(s, OP_scope_put_var);
         emit_u32(s, name);  /* has refcount */
         emit_u16(s, scope);
         break;
@@ -16429,17 +16426,7 @@ static __exception int js_define_var(JSParseState *s, JSAtom name, int tok)
     &&  (fd->js_mode & JS_MODE_STRICT)) {
         return js_parse_error(s, "invalid variable name in strict mode");
     }
-    if ((name == JS_ATOM_let || name == JS_ATOM_undefined)
-    &&  (tok == TOK_LET || tok == TOK_CONST)) {
-        return js_parse_error(s, "invalid lexical variable name");
-    }
     switch(tok) {
-    case TOK_LET:
-        var_def_type = JS_VAR_DEF_LET;
-        break;
-    case TOK_CONST:
-        var_def_type = JS_VAR_DEF_CONST;
-        break;
     case TOK_VAR:
         var_def_type = JS_VAR_DEF_VAR;
         break;
@@ -18102,10 +18089,6 @@ static __exception int js_parse_var(JSParseState *s, BOOL in_accepted, int tok,
                 return js_parse_error_reserved_identifier(s);
             }
             name = JS_DupAtom(ctx, s->token.u.ident.atom);
-            if (name == JS_ATOM_let && (tok == TOK_LET || tok == TOK_CONST)) {
-                js_parse_error(s, "'let' is not a valid lexical identifier");
-                goto var_error;
-            }
             if (next_token(s))
                 goto var_error;
             if (js_define_var(s, name, tok))
@@ -18131,26 +18114,6 @@ static __exception int js_parse_var(JSParseState *s, BOOL in_accepted, int tok,
                     set_object_name(s, name);
                     put_lvalue(s, opcode, scope, name1, label, FALSE);
                     emit_op(s, OP_drop);
-                } else {
-                    if (js_parse_assign_expr(s, in_accepted))
-                        goto var_error;
-                    set_object_name(s, name);
-                    emit_op(s, (tok == TOK_CONST || tok == TOK_LET) ?
-                        OP_scope_put_var_init : OP_scope_put_var);
-                    emit_atom(s, name);
-                    emit_u16(s, fd->scope_level);
-                }
-            } else {
-                if (tok == TOK_CONST) {
-                    js_parse_error(s, "missing initializer for const variable");
-                    goto var_error;
-                }
-                if (tok == TOK_LET) {
-                    /* initialize lexical variable upon entering its scope */
-                    emit_op(s, OP_undefined);
-                    emit_op(s, OP_scope_put_var_init);
-                    emit_atom(s, name);
-                    emit_u16(s, fd->scope_level);
                 }
             }
             JS_FreeAtom(ctx, name);
@@ -18182,53 +18145,6 @@ static BOOL is_label(JSParseState *s)
 {
     return (s->token.val == TOK_IDENT && !s->token.u.ident.is_reserved &&
             peek_token(s, FALSE) == ':');
-}
-
-/* test if the current token is a let keyword. Use simplistic look-ahead scanner */
-static int is_let(JSParseState *s, int decl_mask)
-{
-    int res = FALSE;
-
-    if (token_is_pseudo_keyword(s, JS_ATOM_let)) {
-#if 1
-        JSParsePos pos;
-        js_parse_get_pos(s, &pos);
-        for (;;) {
-            if (next_token(s)) {
-                res = -1;
-                break;
-            }
-            if (s->token.val == '[') {
-                /* let [ is a syntax restriction:
-                   it never introduces an ExpressionStatement */
-                res = TRUE;
-                break;
-            }
-            if (s->token.val == '{' ||
-                (s->token.val == TOK_IDENT && !s->token.u.ident.is_reserved) ||
-                s->token.val == TOK_LET) {
-                /* Check for possible ASI if not scanning for Declaration */
-                /* XXX: should also check that `{` introduces a BindingPattern,
-                   but Firefox does not and rejects eval("let=1;let\n{if(1)2;}") */
-                if (s->last_line_num == s->token.line_num || (decl_mask & DECL_MASK_OTHER)) {
-                    res = TRUE;
-                    break;
-                }
-                break;
-            }
-            break;
-        }
-        if (js_parse_seek_token(s, &pos)) {
-            res = -1;
-        }
-#else
-        int tok = peek_token(s, TRUE);
-        if (tok == '{' || tok == TOK_IDENT || peek_token(s, FALSE) == '[') {
-            res = TRUE;
-        }
-#endif
-    }
-    return res;
 }
 
 /* XXX: handle IteratorClose when exiting the loop before the
@@ -18270,16 +18186,7 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name)
     emit_label(s, label_next);
 
     tok = s->token.val;
-    switch (is_let(s, DECL_MASK_OTHER)) {
-    case TRUE:
-        tok = TOK_LET;
-        break;
-    case FALSE:
-        break;
-    default:
-        return -1;
-    }
-    if (tok == TOK_VAR || tok == TOK_LET || tok == TOK_CONST) {
+    if (tok == TOK_VAR) {
         if (next_token(s))
             return -1;
 
@@ -18302,8 +18209,7 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name)
                 JS_FreeAtom(s->ctx, var_name);
                 return -1;
             }
-            emit_op(s, (tok == TOK_CONST || tok == TOK_LET) ?
-                    OP_scope_put_var_init : OP_scope_put_var);
+            emit_op(s, OP_scope_put_var);
             emit_atom(s, var_name);
             emit_u16(s, fd->scope_level);
         }
@@ -18545,14 +18451,6 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
         if (js_parse_expect_semi(s))
             goto fail;
         break;
-    case TOK_LET:
-    case TOK_CONST:
-    haslet:
-        if (!(decl_mask & DECL_MASK_OTHER)) {
-            js_parse_error(s, "lexical declarations can't appear in single-statement context");
-            goto fail;
-        }
-        /* fall thru */
     case TOK_VAR:
         if (next_token(s))
             goto fail;
@@ -18696,16 +18594,7 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             /* initial expression */
             tok = s->token.val;
             if (tok != ';') {
-                switch (is_let(s, DECL_MASK_OTHER)) {
-                case TRUE:
-                    tok = TOK_LET;
-                    break;
-                case FALSE:
-                    break;
-                default:
-                    goto fail;
-                }
-                if (tok == TOK_VAR || tok == TOK_LET || tok == TOK_CONST) {
+                if (tok == TOK_VAR) {
                     if (next_token(s))
                         goto fail;
                     if (js_parse_var(s, FALSE, tok, FALSE))
@@ -19103,16 +18992,6 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
     case TOK_IDENT:
         if (s->token.u.ident.is_reserved) {
             js_parse_error_reserved_identifier(s);
-            goto fail;
-        }
-        /* Determine if `let` introduces a Declaration or an ExpressionStatement */
-        switch (is_let(s, decl_mask)) {
-        case TRUE:
-            tok = TOK_LET;
-            goto haslet;
-        case FALSE:
-            break;
-        default:
             goto fail;
         }
         goto hasexpr;
