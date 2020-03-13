@@ -14681,13 +14681,7 @@ static __exception int next_token(JSParseState *s)
         }
         break;
     case '?':
-        if (p[1] == '?') {
-            p += 2;
-            s->token.val = TOK_DOUBLE_QUESTION_MARK;
-        } else {
-            goto def_token;
-        }
-        break;
+        goto def_token;
     default:
         if (c >= 128) {
             /* unicode value */
@@ -16930,8 +16924,6 @@ static __exception int js_parse_logical_and_or(JSParseState *s, int op,
                     return -1;
             }
             if (s->token.val != op) {
-                if (s->token.val == TOK_DOUBLE_QUESTION_MARK)
-                    return js_parse_error(s, "cannot mix ?? with && or ||");
                 break;
             }
         }
@@ -16941,38 +16933,11 @@ static __exception int js_parse_logical_and_or(JSParseState *s, int op,
     return 0;
 }
 
-static __exception int js_parse_coalesce_expr(JSParseState *s, BOOL in_accepted)
-{
-    int label1;
-    
-    if (js_parse_logical_and_or(s, TOK_LOR, in_accepted))
-        return -1;
-    if (s->token.val == TOK_DOUBLE_QUESTION_MARK) {
-        label1 = new_label(s);
-        for(;;) {
-            if (next_token(s))
-                return -1;
-            
-            emit_op(s, OP_dup);
-            emit_op(s, OP_is_undefined_or_null);
-            emit_goto(s, OP_if_false, label1);
-            emit_op(s, OP_drop);
-            
-            if (js_parse_expr_binary(s, 8, in_accepted))
-                return -1;
-            if (s->token.val != TOK_DOUBLE_QUESTION_MARK)
-                break;
-        }
-        emit_label(s, label1);
-    }
-    return 0;
-}
-
 static __exception int js_parse_cond_expr(JSParseState *s, BOOL in_accepted)
 {
     int label1, label2;
 
-    if (js_parse_coalesce_expr(s, in_accepted))
+    if (js_parse_logical_and_or(s, TOK_LOR, in_accepted))
         return -1;
     if (s->token.val == '?') {
         if (next_token(s))
