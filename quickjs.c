@@ -14486,11 +14486,6 @@ static __exception int next_token(JSParseState *s)
         }
         break;
     case '.':
-        if (p[1] == '.' && p[2] == '.') {
-            p += 3;
-            s->token.val = TOK_ELLIPSIS;
-            break;
-        }
         if (p[1] >= '0' && p[1] <= '9') {
             goto parse_number;
         } else {
@@ -15543,7 +15538,6 @@ static BOOL is_regexp_allowed(int tok)
 }
 
 #define SKIP_HAS_SEMI      (1 << 0)
-#define SKIP_HAS_ELLIPSIS  (1 << 1)
 
 /* XXX: improve speed with early bailout */
 /* XXX: no longer works if regexps are present. Could use previous
@@ -15587,11 +15581,6 @@ static int js_parse_skip_parens_token(JSParseState *s, int *pbits, BOOL no_line_
         case ';':
             if (level == 2) {
                 bits |= SKIP_HAS_SEMI;
-            }
-            break;
-        case TOK_ELLIPSIS:
-            if (level == 2) {
-                bits |= SKIP_HAS_ELLIPSIS;
             }
             break;
 
@@ -15672,19 +15661,6 @@ static __exception int js_parse_object_literal(JSParseState *s)
         start_ptr = s->token.ptr;
         start_line = s->token.line_num;
 
-        if (s->token.val == TOK_ELLIPSIS) {
-            if (next_token(s))
-                return -1;
-            if (js_parse_assign_expr(s, TRUE))
-                return -1;
-            emit_op(s, OP_null);  /* dummy excludeList */
-            emit_op(s, OP_copy_data_properties);
-            emit_u8(s, 2 | (1 << 2) | (0 << 5));
-            emit_op(s, OP_drop); /* pop excludeList */
-            emit_op(s, OP_drop); /* pop src object */
-            goto next;
-        }
-
         prop_type = js_parse_property_name(s, &name, TRUE);
         if (prop_type < 0)
             goto fail;
@@ -15760,7 +15736,7 @@ static __exception int js_parse_array_literal(JSParseState *s)
     /* small regular arrays are created on the stack */
     idx = 0;
     while (s->token.val != ']' && idx < 32) {
-        if (s->token.val == ',' || s->token.val == TOK_ELLIPSIS)
+        if (s->token.val == ',')
             break;
         if (js_parse_assign_expr(s, TRUE))
             return -1;
@@ -15779,8 +15755,6 @@ static __exception int js_parse_array_literal(JSParseState *s)
     /* larger arrays and holes are handled with explicit indices */
     need_length = FALSE;
     while (s->token.val != ']' && idx < 0x7fffffff) {
-        if (s->token.val == TOK_ELLIPSIS)
-            break;
         need_length = TRUE;
         if (s->token.val != ',') {
             if (js_parse_assign_expr(s, TRUE))
@@ -15815,49 +15789,15 @@ static __exception int js_parse_array_literal(JSParseState *s)
 
     /* stack has array, index */
     while (s->token.val != ']') {
-        if (s->token.val == TOK_ELLIPSIS) {
-            if (next_token(s))
-                return -1;
+        need_length = TRUE;
+        if (s->token.val != ',') {
             if (js_parse_assign_expr(s, TRUE))
                 return -1;
-#if 1
-            emit_op(s, OP_append);
-#else
-            int label_next, label_done;
-            label_next = new_label(s);
-            label_done = new_label(s);
-            /* enumerate object */
-            emit_op(s, OP_for_of_start);
-            emit_op(s, OP_rot5l);
-            emit_op(s, OP_rot5l);
-            emit_label(s, label_next);
-            /* on stack: enum_rec array idx */
-            emit_op(s, OP_for_of_next);
-            emit_u8(s, 2);
-            emit_goto(s, OP_if_true, label_done);
-            /* append element */
-            /* enum_rec array idx val -> enum_rec array new_idx */
+            /* a idx val */
             emit_op(s, OP_define_array_el);
-            emit_op(s, OP_inc);
-            emit_goto(s, OP_goto, label_next);
-            emit_label(s, label_done);
-            /* close enumeration */
-            emit_op(s, OP_drop); /* drop undef val */
-            emit_op(s, OP_nip1); /* drop enum_rec */
-            emit_op(s, OP_nip1);
-            emit_op(s, OP_nip1);
-#endif
-        } else {
-            need_length = TRUE;
-            if (s->token.val != ',') {
-                if (js_parse_assign_expr(s, TRUE))
-                    return -1;
-                /* a idx val */
-                emit_op(s, OP_define_array_el);
-                need_length = FALSE;
-            }
-            emit_op(s, OP_inc);
+            need_length = FALSE;
         }
+        emit_op(s, OP_inc);
         if (s->token.val != ',')
             break;
         if (next_token(s))
@@ -16413,8 +16353,6 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
                 if (arg_count >= 65535) {
                     return js_parse_error(s, "Too many call arguments");
                 }
-                if (s->token.val == TOK_ELLIPSIS)
-                    break;
                 if (js_parse_assign_expr(s, TRUE))
                     return -1;
                 arg_count++;
@@ -16424,124 +16362,34 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
                 if (js_parse_expect(s, ','))
                     return -1;
             }
-            if (s->token.val == TOK_ELLIPSIS) {
-                emit_op(s, OP_array_from);
+
+            if (next_token(s))
+                return -1;
+            switch(opcode) {
+            case OP_get_field:
+            case OP_scope_get_private_field:
+            case OP_get_array_el:
+            case OP_scope_get_ref:
+                emit_op(s, OP_call_method);
                 emit_u16(s, arg_count);
-                emit_op(s, OP_push_i32);
-                emit_u32(s, arg_count);
-
-                /* on stack: array idx */
-                while (s->token.val != ')') {
-                    if (s->token.val == TOK_ELLIPSIS) {
-                        if (next_token(s))
-                            return -1;
-                        if (js_parse_assign_expr(s, TRUE))
-                            return -1;
-#if 1
-                        /* XXX: could pass is_last indicator? */
-                        emit_op(s, OP_append);
-#else
-                        int label_next, label_done;
-                        label_next = new_label(s);
-                        label_done = new_label(s);
-                        /* push enumerate object below array/idx pair */
-                        emit_op(s, OP_for_of_start);
-                        emit_op(s, OP_rot5l);
-                        emit_op(s, OP_rot5l);
-                        emit_label(s, label_next);
-                        /* on stack: enum_rec array idx */
-                        emit_op(s, OP_for_of_next);
-                        emit_u8(s, 2);
-                        emit_goto(s, OP_if_true, label_done);
-                        /* append element */
-                        /* enum_rec array idx val -> enum_rec array new_idx */
-                        emit_op(s, OP_define_array_el);
-                        emit_op(s, OP_inc);
-                        emit_goto(s, OP_goto, label_next);
-                        emit_label(s, label_done);
-                        /* close enumeration, drop enum_rec and idx */
-                        emit_op(s, OP_drop); /* drop undef */
-                        emit_op(s, OP_nip1); /* drop enum_rec */
-                        emit_op(s, OP_nip1);
-                        emit_op(s, OP_nip1);
-#endif
-                    } else {
-                        if (js_parse_assign_expr(s, TRUE))
-                            return -1;
-                        /* array idx val */
-                        emit_op(s, OP_define_array_el);
-                        emit_op(s, OP_inc);
-                    }
-                    if (s->token.val == ')')
-                        break;
-                    /* accept a trailing comma before the ')' */
-                    if (js_parse_expect(s, ','))
-                        return -1;
-                }
-                if (next_token(s))
-                    return -1;
-                /* drop the index */
-                emit_op(s, OP_drop);
-
-                /* apply function call */
-                switch(opcode) {
-                case OP_get_field:
-                case OP_scope_get_private_field:
-                case OP_get_array_el:
-                case OP_scope_get_ref:
-                    /* obj func array -> func obj array */
-                    emit_op(s, OP_perm3);
-                    emit_op(s, OP_apply);
-                    emit_u16(s, call_type == FUNC_CALL_NEW);
-                    break;
-                case OP_eval:
-                    emit_op(s, OP_apply_eval);
-                    emit_u16(s, fd->scope_level);
-                    fd->has_eval_call = TRUE;
-                    break;
-                default:
-                    if (call_type == FUNC_CALL_NEW) {
-                        /* obj func array -> func obj array */
-                        emit_op(s, OP_perm3);
-                        emit_op(s, OP_apply);
-                        emit_u16(s, 1);
-                    } else {
-                        /* func array -> func undef array */
-                        emit_op(s, OP_undefined);
-                        emit_op(s, OP_swap);
-                        emit_op(s, OP_apply);
-                        emit_u16(s, 0);
-                    }
-                    break;
-                }
-            } else {
-                if (next_token(s))
-                    return -1;
-                switch(opcode) {
-                case OP_get_field:
-                case OP_scope_get_private_field:
-                case OP_get_array_el:
-                case OP_scope_get_ref:
-                    emit_op(s, OP_call_method);
+                break;
+            case OP_eval:
+                emit_op(s, OP_eval);
+                emit_u16(s, arg_count);
+                emit_u16(s, fd->scope_level);
+                fd->has_eval_call = TRUE;
+                break;
+            default:
+                if (call_type == FUNC_CALL_NEW) {
+                    emit_op(s, OP_call_constructor);
                     emit_u16(s, arg_count);
-                    break;
-                case OP_eval:
-                    emit_op(s, OP_eval);
+                } else {
+                    emit_op(s, OP_call);
                     emit_u16(s, arg_count);
-                    emit_u16(s, fd->scope_level);
-                    fd->has_eval_call = TRUE;
-                    break;
-                default:
-                    if (call_type == FUNC_CALL_NEW) {
-                        emit_op(s, OP_call_constructor);
-                        emit_u16(s, arg_count);
-                    } else {
-                        emit_op(s, OP_call);
-                        emit_u16(s, arg_count);
-                    }
-                    break;
                 }
+                break;
             }
+            
             call_type = FUNC_CALL_NORMAL;
         } else if (s->token.val == '.') {
             if (next_token(s))
@@ -22077,15 +21925,8 @@ static __exception int js_parse_function_decl2(JSParseState *s,
 
         while (s->token.val != ')') {
             JSAtom name;
-            BOOL rest = FALSE;
             int idx;
 
-            if (s->token.val == TOK_ELLIPSIS) {
-                fd->has_simple_parameter_list = FALSE;
-                rest = TRUE;
-                if (next_token(s))
-                    goto fail;
-            }
             if (s->token.val == TOK_IDENT) {
                 if (s->token.u.ident.is_reserved) {
                     js_parse_error_reserved_identifier(s);
@@ -22101,14 +21942,7 @@ static __exception int js_parse_function_decl2(JSParseState *s,
                     goto fail;
                 if (next_token(s))
                     goto fail;
-                if (rest) {
-                    emit_op(s, OP_rest);
-                    emit_u16(s, idx);
-                    emit_op(s, OP_put_arg);
-                    emit_u16(s, idx);
-                    fd->has_simple_parameter_list = FALSE;
-                    has_opt_arg = TRUE;
-                } else if (s->token.val == '=') {
+                if (s->token.val == '=') {
                     fd->has_simple_parameter_list = FALSE;
                     has_opt_arg = TRUE;
 
@@ -22171,10 +22005,6 @@ static __exception int js_parse_function_decl2(JSParseState *s,
                 }
             } else {
                 js_parse_error(s, "missing formal parameter");
-                goto fail;
-            }
-            if (rest && s->token.val != ')') {
-                js_parse_expect(s, ')');
                 goto fail;
             }
             if (s->token.val == ',') {
