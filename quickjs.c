@@ -1522,7 +1522,6 @@ JSContext *JS_NewContext(JSRuntime *rt)
     JS_AddIntrinsicBaseObjects(ctx);
     JS_AddIntrinsicDate(ctx);
     JS_AddIntrinsicEval(ctx);
-    JS_AddIntrinsicStringNormalize(ctx);
     JS_AddIntrinsicRegExp(ctx);
     JS_AddIntrinsicJSON(ctx);
 
@@ -2932,19 +2931,19 @@ static int string_buffer_concat_value_free(StringBuffer *s, JSValue v)
     return res;
 }
 
-static int string_buffer_fill(StringBuffer *s, int c, int count)
-{
-    /* XXX: optimize */
-    if (s->len + count > s->size) {
-        if (string_buffer_realloc(s, s->len + count, c))
-            return -1;
-    }
-    while (count-- > 0) {
-        if (string_buffer_putc16(s, c))
-            return -1;
-    }
-    return 0;
-}
+// static int string_buffer_fill(StringBuffer *s, int c, int count)
+// {
+//     /* XXX: optimize */
+//     if (s->len + count > s->size) {
+//         if (string_buffer_realloc(s, s->len + count, c))
+//             return -1;
+//     }
+//     while (count-- > 0) {
+//         if (string_buffer_putc16(s, c))
+//             return -1;
+//     }
+//     return 0;
+// }
 
 static JSValue string_buffer_end(StringBuffer *s)
 {
@@ -27362,80 +27361,6 @@ static JSValue js_string_fromCharCode(JSContext *ctx, JSValueConst this_val,
     return string_buffer_end(b);
 }
 
-static JSValue js_string_fromCodePoint(JSContext *ctx, JSValueConst this_val,
-                                       int argc, JSValueConst *argv)
-{
-    double d;
-    int i, c;
-    StringBuffer b_s, *b = &b_s;
-
-    /* XXX: could pre-compute string length if all arguments are JS_TAG_INT */
-
-    if (string_buffer_init(ctx, b, argc))
-        goto fail;
-    for(i = 0; i < argc; i++) {
-        if (JS_VALUE_GET_TAG(argv[i]) == JS_TAG_INT) {
-            c = JS_VALUE_GET_INT(argv[i]);
-            if (c < 0 || c > 0x10ffff)
-                goto range_error;
-        } else {
-            if (JS_ToFloat64(ctx, &d, argv[i]))
-                goto fail;
-            if (d < 0 || d > 0x10ffff || (c = (int)d) != d)
-                goto range_error;
-        }
-        if (string_buffer_putc(b, c))
-            goto fail;
-    }
-    return string_buffer_end(b);
-
- range_error:
-    JS_ThrowRangeError(ctx, "invalid code point");
- fail:
-    string_buffer_free(b);
-    return JS_EXCEPTION;
-}
-
-static JSValue js_string_raw(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv)
-{
-    // raw(temp,...a)
-    JSValue cooked, val, raw;
-    StringBuffer b_s, *b = &b_s;
-    int64_t i, n;
-
-    string_buffer_init(ctx, b, 0);
-    raw = JS_UNDEFINED;
-    cooked = JS_ToObject(ctx, argv[0]);
-    if (JS_IsException(cooked))
-        goto exception;
-    raw = JS_ToObjectFree(ctx, JS_GetProperty(ctx, cooked, JS_ATOM_raw));
-    if (JS_IsException(raw))
-        goto exception;
-    if (js_get_length64(ctx, &n, raw) < 0)
-        goto exception;
-        
-    for (i = 0; i < n; i++) {
-        val = JS_ToStringFree(ctx, JS_GetPropertyInt64(ctx, raw, i));
-        if (JS_IsException(val))
-            goto exception;
-        string_buffer_concat_value_free(b, val);
-        if (i < n - 1 && i + 1 < argc) {
-            if (string_buffer_concat_value(b, argv[i + 1]))
-                goto exception;
-        }
-    }
-    JS_FreeValue(ctx, cooked);
-    JS_FreeValue(ctx, raw);
-    return string_buffer_end(b);
-
-exception:
-    JS_FreeValue(ctx, cooked);
-    JS_FreeValue(ctx, raw);
-    string_buffer_free(b);
-    return JS_EXCEPTION;
-}
-
 /* only used in test262 */
 JSValue js_string_codePointRange(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
@@ -27462,17 +27387,6 @@ JSValue js_string_codePointRange(JSContext *ctx, JSValueConst this_val,
     }
     return string_buffer_end(b);
 }
-
-#if 0
-static JSValue js_string___isSpace(JSContext *ctx, JSValueConst this_val,
-                                   int argc, JSValueConst *argv)
-{
-    int c;
-    if (JS_ToInt32(ctx, &c, argv[0]))
-        return JS_EXCEPTION;
-    return JS_NewBool(ctx, lre_is_space(c));
-}
-#endif
 
 static JSValue js_string_charCodeAt(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv)
@@ -27525,31 +27439,6 @@ static JSValue js_string_charAt(JSContext *ctx, JSValueConst this_val,
         else
             c = p->u.str8[idx];
         ret = js_new_string_char(ctx, c);
-    }
-    JS_FreeValue(ctx, val);
-    return ret;
-}
-
-static JSValue js_string_codePointAt(JSContext *ctx, JSValueConst this_val,
-                                     int argc, JSValueConst *argv)
-{
-    JSValue val, ret;
-    JSString *p;
-    int idx, c;
-
-    val = JS_ToStringCheckObject(ctx, this_val);
-    if (JS_IsException(val))
-        return val;
-    p = JS_VALUE_GET_STRING(val);
-    if (JS_ToInt32Sat(ctx, &idx, argv[0])) {
-        JS_FreeValue(ctx, val);
-        return JS_EXCEPTION;
-    }
-    if (idx < 0 || idx >= p->len) {
-        ret = JS_UNDEFINED;
-    } else {
-        c = string_getc(p, &idx);
-        ret = JS_NewInt32(ctx, c);
     }
     JS_FreeValue(ctx, val);
     return ret;
@@ -27696,66 +27585,6 @@ fail:
 
 /* return < 0 if exception or TRUE/FALSE */
 static int js_is_regexp(JSContext *ctx, JSValueConst obj);
-
-static JSValue js_string_includes(JSContext *ctx, JSValueConst this_val,
-                                  int argc, JSValueConst *argv, int magic)
-{
-    JSValue str, v = JS_UNDEFINED;
-    int i, len, v_len, pos, start, stop, ret;
-    JSString *p;
-    JSString *p1;
-
-    str = JS_ToStringCheckObject(ctx, this_val);
-    if (JS_IsException(str))
-        return str;
-    ret = js_is_regexp(ctx, argv[0]);
-    if (ret) {
-        if (ret > 0)
-            JS_ThrowTypeError(ctx, "regex not supported");
-        goto fail;
-    }
-    v = JS_ToString(ctx, argv[0]);
-    if (JS_IsException(v))
-        goto fail;
-    p = JS_VALUE_GET_STRING(str);
-    p1 = JS_VALUE_GET_STRING(v);
-    len = p->len;
-    v_len = p1->len;
-    pos = (magic & 2) ? len : 0;
-    if (argc > 1 && !JS_IsUndefined(argv[1])) {
-        if (JS_ToInt32Clamp(ctx, &pos, argv[1], 0, len, 0))
-            goto fail;
-    }
-    len -= v_len;
-    start = pos;
-    stop = len;
-    if (magic & 1) {
-        stop = pos;
-    }
-    if (magic & 2) {
-        pos -= v_len;
-        start = stop = pos;
-    }
-    ret = 0;
-    if (start >= 0 && start <= stop) {
-        for (i = start;; i++) {
-            if (!string_cmp(p, p1, i, 0, v_len)) {
-                ret = 1;
-                break;
-            }
-            if (i == stop)
-                break;
-        }
-    }
-    JS_FreeValue(ctx, str);
-    JS_FreeValue(ctx, v);
-    return JS_NewBool(ctx, ret);
-
-fail:
-    JS_FreeValue(ctx, str);
-    JS_FreeValue(ctx, v);
-    return JS_EXCEPTION;
-}
 
 static int check_regexp_g_flag(JSContext *ctx, JSValueConst regexp)
 {
@@ -28235,121 +28064,6 @@ static JSValue js_string_slice(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
-static JSValue js_string_pad(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv, int padEnd)
-{
-    JSValue str, v = JS_UNDEFINED;
-    StringBuffer b_s, *b = &b_s;
-    JSString *p, *p1 = NULL;
-    int n, len, c = ' ';
-
-    str = JS_ToStringCheckObject(ctx, this_val);
-    if (JS_IsException(str))
-        goto fail1;
-    if (JS_ToInt32Sat(ctx, &n, argv[0]))
-        goto fail2;
-    p = JS_VALUE_GET_STRING(str);
-    len = p->len;
-    if (len >= n)
-        return str;
-    if (n > JS_STRING_LEN_MAX) {
-        JS_ThrowInternalError(ctx, "string too long");
-        goto fail2;
-    }
-    if (argc > 1 && !JS_IsUndefined(argv[1])) {
-        v = JS_ToString(ctx, argv[1]);
-        if (JS_IsException(v))
-            goto fail2;
-        p1 = JS_VALUE_GET_STRING(v);
-        if (p1->len == 0) {
-            JS_FreeValue(ctx, v);
-            return str;
-        }
-        if (p1->len == 1) {
-            c = string_get(p1, 0);
-            p1 = NULL;
-        }
-    }
-    if (string_buffer_init(ctx, b, n))
-        goto fail3;
-    n -= len;
-    if (padEnd) {
-        if (string_buffer_concat(b, p, 0, len))
-            goto fail;
-    }
-    if (p1) {
-        while (n > 0) {
-            int chunk = min_int(n, p1->len);
-            if (string_buffer_concat(b, p1, 0, chunk))
-                goto fail;
-            n -= chunk;
-        }
-    } else {
-        if (string_buffer_fill(b, c, n))
-            goto fail;
-    }
-    if (!padEnd) {
-        if (string_buffer_concat(b, p, 0, len))
-            goto fail;
-    }
-    JS_FreeValue(ctx, v);
-    JS_FreeValue(ctx, str);
-    return string_buffer_end(b);
-
-fail:
-    string_buffer_free(b);
-fail3:
-    JS_FreeValue(ctx, v);
-fail2:
-    JS_FreeValue(ctx, str);
-fail1:
-    return JS_EXCEPTION;
-}
-
-static JSValue js_string_repeat(JSContext *ctx, JSValueConst this_val,
-                                int argc, JSValueConst *argv)
-{
-    JSValue str;
-    StringBuffer b_s, *b = &b_s;
-    JSString *p;
-    int64_t val;
-    int n, len;
-
-    str = JS_ToStringCheckObject(ctx, this_val);
-    if (JS_IsException(str))
-        goto fail;
-    if (JS_ToInt64Sat(ctx, &val, argv[0]))
-        goto fail;
-    if (val < 0 || val > 2147483647) {
-        JS_ThrowRangeError(ctx, "invalid repeat count");
-        goto fail;
-    }
-    n = val;
-    p = JS_VALUE_GET_STRING(str);
-    len = p->len;
-    if (len == 0 || n == 1)
-        return str;
-    if (val * len > JS_STRING_LEN_MAX) {
-        JS_ThrowInternalError(ctx, "string too long");
-        goto fail;
-    }
-    if (string_buffer_init2(ctx, b, n * len, p->is_wide_char))
-        goto fail;
-    if (len == 1) {
-        string_buffer_fill(b, string_get(p, 0), n);
-    } else {
-        while (n-- > 0) {
-            string_buffer_concat(b, p, 0, len);
-        }
-    }
-    JS_FreeValue(ctx, str);
-    return string_buffer_end(b);
-
-fail:
-    JS_FreeValue(ctx, str);
-    return JS_EXCEPTION;
-}
-
 static JSValue js_string_trim(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv, int magic)
 {
@@ -28493,112 +28207,6 @@ static JSValue js_string_toLowerCase(JSContext *ctx, JSValueConst this_val,
     return JS_EXCEPTION;
 }
 
-#ifdef CONFIG_ALL_UNICODE
-
-/* return (-1, NULL) if exception, otherwise (len, buf) */
-static int JS_ToUTF32String(JSContext *ctx, uint32_t **pbuf, JSValueConst val1)
-{
-    JSValue val;
-    JSString *p;
-    uint32_t *buf;
-    int i, j, len;
-
-    val = JS_ToString(ctx, val1);
-    if (JS_IsException(val))
-        return -1;
-    p = JS_VALUE_GET_STRING(val);
-    len = p->len;
-    /* UTF32 buffer length is len minus the number of correct surrogates pairs */
-    buf = js_malloc(ctx, sizeof(buf[0]) * max_int(len, 1));
-    if (!buf) {
-        JS_FreeValue(ctx, val);
-        goto fail;
-    }
-    for(i = j = 0; i < len;)
-        buf[j++] = string_getc(p, &i);
-    JS_FreeValue(ctx, val);
-    *pbuf = buf;
-    return j;
- fail:
-    *pbuf = NULL;
-    return -1;
-}
-
-static JSValue JS_NewUTF32String(JSContext *ctx, const uint32_t *buf, int len)
-{
-    int i;
-    StringBuffer b_s, *b = &b_s;
-    if (string_buffer_init(ctx, b, len))
-        return JS_EXCEPTION;
-    for(i = 0; i < len; i++) {
-        if (string_buffer_putc(b, buf[i]))
-            goto fail;
-    }
-    return string_buffer_end(b);
- fail:
-    string_buffer_free(b);
-    return JS_EXCEPTION;
-}
-
-static JSValue js_string_normalize(JSContext *ctx, JSValueConst this_val,
-                                   int argc, JSValueConst *argv)
-{
-    const char *form, *p;
-    size_t form_len;
-    int is_compat, buf_len, out_len;
-    UnicodeNormalizationEnum n_type;
-    JSValue val;
-    uint32_t *buf, *out_buf;
-
-    val = JS_ToStringCheckObject(ctx, this_val);
-    if (JS_IsException(val))
-        return val;
-    buf_len = JS_ToUTF32String(ctx, &buf, val);
-    JS_FreeValue(ctx, val);
-    if (buf_len < 0)
-        return JS_EXCEPTION;
-
-    if (argc == 0 || JS_IsUndefined(argv[0])) {
-        n_type = UNICODE_NFC;
-    } else {
-        form = JS_ToCStringLen(ctx, &form_len, argv[0]);
-        if (!form)
-            goto fail1;
-        p = form;
-        if (p[0] != 'N' || p[1] != 'F')
-            goto bad_form;
-        p += 2;
-        is_compat = FALSE;
-        if (*p == 'K') {
-            is_compat = TRUE;
-            p++;
-        }
-        if (*p == 'C' || *p == 'D') {
-            n_type = UNICODE_NFC + is_compat * 2 + (*p - 'C');
-            if ((p + 1 - form) != form_len)
-                goto bad_form;
-        } else {
-        bad_form:
-            JS_FreeCString(ctx, form);
-            JS_ThrowRangeError(ctx, "bad normalization form");
-        fail1:
-            js_free(ctx, buf);
-            return JS_EXCEPTION;
-        }
-        JS_FreeCString(ctx, form);
-    }
-
-    out_len = unicode_normalize(&out_buf, buf, buf_len, n_type,
-                                ctx->rt, (DynBufReallocFunc *)js_realloc_rt);
-    js_free(ctx, buf);
-    if (out_len < 0)
-        return JS_EXCEPTION;
-    val = JS_NewUTF32String(ctx, out_buf, out_len);
-    js_free(ctx, out_buf);
-    return val;
-}
-#endif /* CONFIG_ALL_UNICODE */
-
 /* also used for String.prototype.valueOf */
 static JSValue js_string_toString(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
@@ -28606,94 +28214,9 @@ static JSValue js_string_toString(JSContext *ctx, JSValueConst this_val,
     return js_thisStringValue(ctx, this_val);
 }
 
-#if 0
-static JSValue js_string___toStringCheckObject(JSContext *ctx, JSValueConst this_val,
-                                               int argc, JSValueConst *argv)
-{
-    return JS_ToStringCheckObject(ctx, argv[0]);
-}
-
-static JSValue js_string___toString(JSContext *ctx, JSValueConst this_val,
-                                    int argc, JSValueConst *argv)
-{
-    return JS_ToString(ctx, argv[0]);
-}
-
-static JSValue js_string___advanceStringIndex(JSContext *ctx, JSValueConst
-                                              this_val,
-                                              int argc, JSValueConst *argv)
-{
-    JSValue str;
-    int idx;
-    BOOL is_unicode;
-    JSString *p;
-
-    str = JS_ToString(ctx, argv[0]);
-    if (JS_IsException(str))
-        return str;
-    if (JS_ToInt32Sat(ctx, &idx, argv[1])) {
-        JS_FreeValue(ctx, str);
-        return JS_EXCEPTION;
-    }
-    is_unicode = JS_ToBool(ctx, argv[2]);
-    p = JS_VALUE_GET_STRING(str);
-    if (!is_unicode || (unsigned)idx >= p->len || !p->is_wide_char) {
-        idx++;
-    } else {
-        string_getc(p, &idx);
-    }
-    JS_FreeValue(ctx, str);
-    return JS_NewInt32(ctx, idx);
-}
-#endif
-
-/* String Iterator */
-
-static JSValue js_string_iterator_next(JSContext *ctx, JSValueConst this_val,
-                                       int argc, JSValueConst *argv,
-                                       BOOL *pdone, int magic)
-{
-    JSArrayIteratorData *it;
-    uint32_t idx, c, start;
-    JSString *p;
-
-    it = JS_GetOpaque2(ctx, this_val, JS_CLASS_STRING_ITERATOR);
-    if (!it) {
-        *pdone = FALSE;
-        return JS_EXCEPTION;
-    }
-    if (JS_IsUndefined(it->obj))
-        goto done;
-    p = JS_VALUE_GET_STRING(it->obj);
-    idx = it->idx;
-    if (idx >= p->len) {
-        JS_FreeValue(ctx, it->obj);
-        it->obj = JS_UNDEFINED;
-    done:
-        *pdone = TRUE;
-        return JS_UNDEFINED;
-    }
-
-    start = idx;
-    c = string_getc(p, (int *)&idx);
-    it->idx = idx;
-    *pdone = FALSE;
-    if (c <= 0xffff) {
-        return js_new_string_char(ctx, c);
-    } else {
-        return js_new_string16(ctx, p->u.str16 + start, 2);
-    }
-}
 
 static const JSCFunctionListEntry js_string_funcs[] = {
-    JS_CFUNC_DEF("fromCharCode", 1, js_string_fromCharCode ),
-    JS_CFUNC_DEF("fromCodePoint", 1, js_string_fromCodePoint ),
-    JS_CFUNC_DEF("raw", 1, js_string_raw ),
-    //JS_CFUNC_DEF("__toString", 1, js_string___toString ),
-    //JS_CFUNC_DEF("__isSpace", 1, js_string___isSpace ),
-    //JS_CFUNC_DEF("__toStringCheckObject", 1, js_string___toStringCheckObject ),
-    //JS_CFUNC_DEF("__advanceStringIndex", 3, js_string___advanceStringIndex ),
-    //JS_CFUNC_DEF("__GetSubstitution", 6, js_string___GetSubstitution ),
+    JS_CFUNC_DEF("fromCharCode", 1, js_string_fromCharCode )
 };
 
 static const JSCFunctionListEntry js_string_proto_funcs[] = {
@@ -28701,29 +28224,16 @@ static const JSCFunctionListEntry js_string_proto_funcs[] = {
     JS_CFUNC_DEF("charCodeAt", 1, js_string_charCodeAt ),
     JS_CFUNC_DEF("charAt", 1, js_string_charAt ),
     JS_CFUNC_DEF("concat", 1, js_string_concat ),
-    JS_CFUNC_DEF("codePointAt", 1, js_string_codePointAt ),
     JS_CFUNC_MAGIC_DEF("indexOf", 1, js_string_indexOf, 0 ),
     JS_CFUNC_MAGIC_DEF("lastIndexOf", 1, js_string_indexOf, 1 ),
-    JS_CFUNC_MAGIC_DEF("includes", 1, js_string_includes, 0 ),
-    JS_CFUNC_MAGIC_DEF("endsWith", 1, js_string_includes, 2 ),
-    JS_CFUNC_MAGIC_DEF("startsWith", 1, js_string_includes, 1 ),
     JS_CFUNC_MAGIC_DEF("match", 1, js_string_match, JS_ATOM_Symbol_match ),
-    JS_CFUNC_MAGIC_DEF("matchAll", 1, js_string_match, JS_ATOM_Symbol_matchAll ),
     JS_CFUNC_MAGIC_DEF("search", 1, js_string_match, JS_ATOM_Symbol_search ),
     JS_CFUNC_DEF("split", 2, js_string_split ),
     JS_CFUNC_DEF("substring", 2, js_string_substring ),
     JS_CFUNC_DEF("substr", 2, js_string_substr ),
     JS_CFUNC_DEF("slice", 2, js_string_slice ),
-    JS_CFUNC_DEF("repeat", 1, js_string_repeat ),
     JS_CFUNC_MAGIC_DEF("replace", 2, js_string_replace, 0 ),
-    JS_CFUNC_MAGIC_DEF("replaceAll", 2, js_string_replace, 1 ),
-    JS_CFUNC_MAGIC_DEF("padEnd", 1, js_string_pad, 1 ),
-    JS_CFUNC_MAGIC_DEF("padStart", 1, js_string_pad, 0 ),
     JS_CFUNC_MAGIC_DEF("trim", 0, js_string_trim, 3 ),
-    JS_CFUNC_MAGIC_DEF("trimEnd", 0, js_string_trim, 2 ),
-    JS_ALIAS_DEF("trimRight", "trimEnd" ),
-    JS_CFUNC_MAGIC_DEF("trimStart", 0, js_string_trim, 1 ),
-    JS_ALIAS_DEF("trimLeft", "trimStart" ),
     JS_CFUNC_DEF("toString", 0, js_string_toString ),
     JS_CFUNC_DEF("valueOf", 0, js_string_toString ),
     JS_CFUNC_DEF("__quote", 1, js_string___quote ),
@@ -28732,27 +28242,7 @@ static const JSCFunctionListEntry js_string_proto_funcs[] = {
     JS_CFUNC_MAGIC_DEF("toUpperCase", 0, js_string_toLowerCase, 0 ),
     JS_CFUNC_MAGIC_DEF("toLocaleLowerCase", 0, js_string_toLowerCase, 1 ),
     JS_CFUNC_MAGIC_DEF("toLocaleUpperCase", 0, js_string_toLowerCase, 0 ),
-    JS_CFUNC_MAGIC_DEF("[Symbol.iterator]", 0, js_create_array_iterator, JS_ITERATOR_KIND_VALUE | 4 ),
 };
-
-static const JSCFunctionListEntry js_string_iterator_proto_funcs[] = {
-    JS_ITERATOR_NEXT_DEF("next", 0, js_string_iterator_next, 0 ),
-    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "String Iterator", JS_PROP_CONFIGURABLE ),
-};
-
-#ifdef CONFIG_ALL_UNICODE
-static const JSCFunctionListEntry js_string_proto_normalize[] = {
-    JS_CFUNC_DEF("normalize", 0, js_string_normalize ),
-};
-#endif
-
-void JS_AddIntrinsicStringNormalize(JSContext *ctx)
-{
-#ifdef CONFIG_ALL_UNICODE
-    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_STRING], js_string_proto_normalize,
-                               countof(js_string_proto_normalize));
-#endif
-}
 
 /* Math */
 
@@ -32575,11 +32065,6 @@ void JS_AddIntrinsicBaseObjects(JSContext *ctx)
                                countof(js_string_funcs));
     JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_STRING], js_string_proto_funcs,
                                countof(js_string_proto_funcs));
-
-    ctx->class_proto[JS_CLASS_STRING_ITERATOR] = JS_NewObjectProto(ctx, ctx->iterator_proto);
-    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_STRING_ITERATOR],
-                               js_string_iterator_proto_funcs,
-                               countof(js_string_iterator_proto_funcs));
 
     /* Math: create as autoinit object */
     js_random_init(ctx);
