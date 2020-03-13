@@ -27920,16 +27920,6 @@ static JSValue js_math_min_max(JSContext *ctx, JSValueConst this_val,
     }
 }
 
-static double js_math_sign(double a)
-{
-    if (isnan(a) || a == 0.0)
-        return a;
-    if (a < 0)
-        return -1;
-    else
-        return 1;
-}
-
 static double js_math_round(double a)
 {
     JSFloat64Union u;
@@ -27956,63 +27946,6 @@ static double js_math_round(double a)
     }
     /* otherwise: abs(a) >= 2^52, or NaN, +/-Infinity: no change */
     return u.d;
-}
-
-static JSValue js_math_hypot(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv)
-{
-    double r, a, b;
-    int i;
-
-    if (argc == 2) {
-        /* use the more precise built-in function when possible */
-        if (JS_ToFloat64(ctx, &a, argv[0]))
-            return JS_EXCEPTION;
-        if (JS_ToFloat64(ctx, &b, argv[1]))
-            return JS_EXCEPTION;
-        r = hypot(a, b);
-    } else {
-        r = 0;
-        for(i = 0; i < argc; i++) {
-            if (JS_ToFloat64(ctx, &a, argv[i]))
-                return JS_EXCEPTION;
-            r += a;
-        }
-        r = sqrt(r);
-    }
-    return JS_NewFloat64(ctx, r);
-}
-
-static double js_math_fround(double a)
-{
-    return (float)a;
-}
-
-static JSValue js_math_imul(JSContext *ctx, JSValueConst this_val,
-                            int argc, JSValueConst *argv)
-{
-    int a, b;
-
-    if (JS_ToInt32(ctx, &a, argv[0]))
-        return JS_EXCEPTION;
-    if (JS_ToInt32(ctx, &b, argv[1]))
-        return JS_EXCEPTION;
-    /* purposely ignoring overflow */
-    return JS_NewInt32(ctx, a * b);
-}
-
-static JSValue js_math_clz32(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv)
-{
-    uint32_t a, r;
-
-    if (JS_ToUint32(ctx, &a, argv[0]))
-        return JS_EXCEPTION;
-    if (a == 0)
-        r = 32;
-    else
-        r = clz32(a);
-    return JS_NewInt32(ctx, r);
 }
 
 /* xorshift* random number generator by Marsaglia */
@@ -28068,26 +28001,8 @@ static const JSCFunctionListEntry js_math_funcs[] = {
     JS_CFUNC_SPECIAL_DEF("pow", 2, f_f_f, js_pow ),
     JS_CFUNC_SPECIAL_DEF("sin", 1, f_f, sin ),
     JS_CFUNC_SPECIAL_DEF("tan", 1, f_f, tan ),
-    /* ES6 */
-    JS_CFUNC_SPECIAL_DEF("trunc", 1, f_f, trunc ),
-    JS_CFUNC_SPECIAL_DEF("sign", 1, f_f, js_math_sign ),
-    JS_CFUNC_SPECIAL_DEF("cosh", 1, f_f, cosh ),
-    JS_CFUNC_SPECIAL_DEF("sinh", 1, f_f, sinh ),
-    JS_CFUNC_SPECIAL_DEF("tanh", 1, f_f, tanh ),
-    JS_CFUNC_SPECIAL_DEF("acosh", 1, f_f, acosh ),
-    JS_CFUNC_SPECIAL_DEF("asinh", 1, f_f, asinh ),
-    JS_CFUNC_SPECIAL_DEF("atanh", 1, f_f, atanh ),
-    JS_CFUNC_SPECIAL_DEF("expm1", 1, f_f, expm1 ),
-    JS_CFUNC_SPECIAL_DEF("log1p", 1, f_f, log1p ),
-    JS_CFUNC_SPECIAL_DEF("log2", 1, f_f, log2 ),
-    JS_CFUNC_SPECIAL_DEF("log10", 1, f_f, log10 ),
-    JS_CFUNC_SPECIAL_DEF("cbrt", 1, f_f, cbrt ),
-    JS_CFUNC_DEF("hypot", 2, js_math_hypot ),
     JS_CFUNC_DEF("random", 0, js_math_random ),
-    JS_CFUNC_SPECIAL_DEF("fround", 1, f_f, js_math_fround ),
-    JS_CFUNC_DEF("imul", 2, js_math_imul ),
-    JS_CFUNC_DEF("clz32", 1, js_math_clz32 ),
-    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "Math", JS_PROP_CONFIGURABLE ),
+
     JS_PROP_DOUBLE_DEF("E", 2.718281828459045, 0 ),
     JS_PROP_DOUBLE_DEF("LN10", 2.302585092994046, 0 ),
     JS_PROP_DOUBLE_DEF("LN2", 0.6931471805599453, 0 ),
