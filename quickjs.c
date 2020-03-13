@@ -14586,9 +14586,6 @@ static __exception int next_token(JSParseState *s)
                 p += 2;
                 s->token.val = TOK_EQ;
             }
-        } else if (p[1] == '>') {
-            p += 2;
-            s->token.val = TOK_ARROW;
         } else {
             goto def_token;
         }
@@ -14726,10 +14723,6 @@ static int simple_next_token(const uint8_t **pp, BOOL no_line_terminator)
                 }
                 continue;
             }
-            break;
-        case '=':
-            if (*p == '>')
-                return TOK_ARROW;
             break;
         default:
             if (lre_js_is_ident_first(c)) {
@@ -16128,15 +16121,8 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
         }
         break;
     case '(':
-        if (js_parse_skip_parens_token(s, NULL, TRUE) == TOK_ARROW) {
-            if (js_parse_function_decl(s, JS_PARSE_FUNC_ARROW,
-                                       JS_FUNC_NORMAL, JS_ATOM_NULL,
-                                       s->token.ptr, s->token.line_num))
-                return -1;
-        } else {
-            if (js_parse_expr_paren(s))
-                return -1;
-        }
+        if (js_parse_expr_paren(s))
+            return -1;
         break;
     case TOK_FUNCTION:
         if (js_parse_function_decl(s, JS_PARSE_FUNC_EXPR,
@@ -16172,24 +16158,18 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
             if (s->token.u.ident.is_reserved) {
                 return js_parse_error_reserved_identifier(s);
             }
-            if (peek_token(s, TRUE) == TOK_ARROW) {
-                if (js_parse_function_decl(s, JS_PARSE_FUNC_ARROW,
-                                           JS_FUNC_NORMAL, JS_ATOM_NULL,
-                                           s->token.ptr, s->token.line_num))
-                    return -1;
-            } else {
-                if (s->token.u.ident.atom == JS_ATOM_arguments &&
-                    !s->cur_func->arguments_allowed) {
-                    js_parse_error(s, "'arguments' identifier is not allowed in class field initializer");
-                    return -1;
-                }
-                name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
-                if (next_token(s))  /* update line number before emitting code */
-                    return -1;
-                emit_op(s, OP_scope_get_var);
-                emit_u32(s, name);
-                emit_u16(s, s->cur_func->scope_level);
+            
+            if (s->token.u.ident.atom == JS_ATOM_arguments &&
+                !s->cur_func->arguments_allowed) {
+                js_parse_error(s, "'arguments' identifier is not allowed in class field initializer");
+                return -1;
             }
+            name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
+            if (next_token(s))  /* update line number before emitting code */
+                return -1;
+            emit_op(s, OP_scope_get_var);
+            emit_u32(s, name);
+            emit_u16(s, s->cur_func->scope_level);
         }
         break;
     case '{':
@@ -21804,13 +21784,9 @@ static __exception int js_parse_function_decl2(JSParseState *s,
     fd->has_arguments_binding = (func_type != JS_PARSE_FUNC_ARROW);
     fd->has_this_binding = fd->has_arguments_binding;
     fd->is_derived_class_constructor = (func_type == JS_PARSE_FUNC_DERIVED_CLASS_CONSTRUCTOR);
-    if (func_type == JS_PARSE_FUNC_ARROW) {
-        fd->new_target_allowed = fd->parent->new_target_allowed;
-        fd->arguments_allowed = fd->parent->arguments_allowed;
-    } else {
-        fd->new_target_allowed = TRUE;
-        fd->arguments_allowed = TRUE;
-    }
+
+    fd->new_target_allowed = TRUE;
+    fd->arguments_allowed = TRUE;
 
     /* fd->in_function_body == FALSE prevents yield/await during the parsing
        of the arguments in generator/async functions. They are parsed as
@@ -21821,108 +21797,97 @@ static __exception int js_parse_function_decl2(JSParseState *s,
     /* parse arguments */
     fd->has_simple_parameter_list = TRUE;
     has_opt_arg = FALSE;
-    if (func_type == JS_PARSE_FUNC_ARROW && s->token.val == TOK_IDENT) {
+
+    if (js_parse_expect(s, '('))
+        goto fail;
+
+    while (s->token.val != ')') {
         JSAtom name;
-        if (s->token.u.ident.is_reserved) {
-            js_parse_error_reserved_identifier(s);
-            goto fail;
-        }
-        name = s->token.u.ident.atom;
-        if (add_arg(ctx, fd, name) < 0)
-            goto fail;
-        fd->defined_arg_count = 1;
-    } else {
-        if (js_parse_expect(s, '('))
-            goto fail;
+        int idx;
 
-        while (s->token.val != ')') {
-            JSAtom name;
-            int idx;
-
-            if (s->token.val == TOK_IDENT) {
-                if (s->token.u.ident.is_reserved) {
-                    js_parse_error_reserved_identifier(s);
-                    goto fail;
-                }
-                name = s->token.u.ident.atom;
-                if (name == JS_ATOM_yield && (fd->js_mode & JS_MODE_STRICT)) {
-                    js_parse_error_reserved_identifier(s);
-                    goto fail;
-                }
-                idx = add_arg(ctx, fd, name);
-                if (idx < 0)
-                    goto fail;
-                if (next_token(s))
-                    goto fail;
-                if (s->token.val == '=') {
-                    fd->has_simple_parameter_list = FALSE;
-                    has_opt_arg = TRUE;
-
-                    if (next_token(s))
-                        goto fail;
-
-                    /* optimize `x = void 0` default value: no code needed */
-                    if (s->token.val == TOK_VOID) {
-                        JSParsePos pos;
-                        js_parse_get_pos(s, &pos);
-                        if (next_token(s))
-                            goto fail;
-                        if (s->token.val == TOK_NUMBER) {
-                            if (next_token(s))
-                                goto fail;
-                            if (s->token.val == ',') {
-                                if (next_token(s))
-                                    goto fail;
-                                continue;
-                            }
-                            if (s->token.val == ')') {
-                                continue;
-                            }
-                        }
-                        if (js_parse_seek_token(s, &pos))
-                            goto fail;
-                    }
-#if 0
-                    /* XXX: not correct for eval code */
-                    /* Check for a default value of `undefined`
-                       to omit default argument processing */
-                    if (s->token.val == TOK_IDENT &&
-                        s->token.u.ident.atom == JS_ATOM_undefined &&
-                        fd->parent == NULL &&
-                        ((tok = peek_token(s, FALSE)) == ',' || tok == ')')) {
-                        if (next_token(s))  /* ignore undefined token */
-                            goto fail;
-                    } else
-#endif
-                    {
-                        int label = new_label(s);
-                        if (idx > 0) {
-                            emit_op(s, OP_set_arg_valid_upto);
-                            emit_u16(s, idx);
-                        }
-                        emit_op(s, OP_get_arg);
-                        emit_u16(s, idx);
-                        emit_op(s, OP_undefined);
-                        emit_op(s, OP_strict_eq);
-                        emit_goto(s, OP_if_false, label);
-                        if (js_parse_assign_expr(s, TRUE))
-                            goto fail;
-                        set_object_name(s, name);
-                        emit_op(s, OP_put_arg);
-                        emit_u16(s, idx);
-                        emit_label(s, label);
-                    }
-                } else if (!has_opt_arg) {
-                    fd->defined_arg_count++;
-                }
-            } else {
-                js_parse_error(s, "missing formal parameter");
+        if (s->token.val == TOK_IDENT) {
+            if (s->token.u.ident.is_reserved) {
+                js_parse_error_reserved_identifier(s);
                 goto fail;
             }
-            if (s->token.val == ',') {
+            name = s->token.u.ident.atom;
+            if (name == JS_ATOM_yield && (fd->js_mode & JS_MODE_STRICT)) {
+                js_parse_error_reserved_identifier(s);
+                goto fail;
+            }
+            idx = add_arg(ctx, fd, name);
+            if (idx < 0)
+                goto fail;
+            if (next_token(s))
+                goto fail;
+            if (s->token.val == '=') {
+                fd->has_simple_parameter_list = FALSE;
+                has_opt_arg = TRUE;
+
                 if (next_token(s))
                     goto fail;
+
+                /* optimize `x = void 0` default value: no code needed */
+                if (s->token.val == TOK_VOID) {
+                    JSParsePos pos;
+                    js_parse_get_pos(s, &pos);
+                    if (next_token(s))
+                        goto fail;
+                    if (s->token.val == TOK_NUMBER) {
+                        if (next_token(s))
+                            goto fail;
+                        if (s->token.val == ',') {
+                            if (next_token(s))
+                                goto fail;
+                            continue;
+                        }
+                        if (s->token.val == ')') {
+                            continue;
+                        }
+                    }
+                    if (js_parse_seek_token(s, &pos))
+                        goto fail;
+                }
+#if 0
+                /* XXX: not correct for eval code */
+                /* Check for a default value of `undefined`
+                   to omit default argument processing */
+                if (s->token.val == TOK_IDENT &&
+                    s->token.u.ident.atom == JS_ATOM_undefined &&
+                    fd->parent == NULL &&
+                    ((tok = peek_token(s, FALSE)) == ',' || tok == ')')) {
+                    if (next_token(s))  /* ignore undefined token */
+                        goto fail;
+                } else
+#endif
+                {
+                    int label = new_label(s);
+                    if (idx > 0) {
+                        emit_op(s, OP_set_arg_valid_upto);
+                        emit_u16(s, idx);
+                    }
+                    emit_op(s, OP_get_arg);
+                    emit_u16(s, idx);
+                    emit_op(s, OP_undefined);
+                    emit_op(s, OP_strict_eq);
+                    emit_goto(s, OP_if_false, label);
+                    if (js_parse_assign_expr(s, TRUE))
+                        goto fail;
+                    set_object_name(s, name);
+                    emit_op(s, OP_put_arg);
+                    emit_u16(s, idx);
+                    emit_label(s, label);
+                }
+            } else if (!has_opt_arg) {
+                fd->defined_arg_count++;
             }
+        } else {
+            js_parse_error(s, "missing formal parameter");
+            goto fail;
+        }
+        if (s->token.val == ',') {
+            if (next_token(s))
+                goto fail;
         }
         if ((func_type == JS_PARSE_FUNC_GETTER && fd->arg_count != 0) ||
             (func_type == JS_PARSE_FUNC_SETTER && fd->arg_count != 1)) {
@@ -21938,32 +21903,6 @@ static __exception int js_parse_function_decl2(JSParseState *s,
        of the arguments */
     fd->in_function_body = TRUE;
     push_scope(s);  /* enter body scope: fd->scope_level = 1 */
-
-    if (s->token.val == TOK_ARROW) {
-        if (next_token(s))
-            goto fail;
-
-        if (s->token.val != '{') {
-            if (js_parse_function_check_names(s, fd, func_name))
-                goto fail;
-
-            if (js_parse_assign_expr(s, TRUE))
-                goto fail;
-
-            emit_op(s, OP_return);
-
-            if (!(fd->js_mode & JS_MODE_STRIP)) {
-                /* save the function source code */
-                /* the end of the function source code is after the last
-                   token of the function source stored into s->last_ptr */
-                fd->source_len = s->last_ptr - ptr;
-                fd->source = js_strndup(ctx, (const char *)ptr, fd->source_len);
-                if (!fd->source)
-                    goto fail;
-            }
-            goto done;
-        }
-    }
 
     if (js_parse_expect(s, '{'))
         goto fail;
@@ -21996,7 +21935,7 @@ static __exception int js_parse_function_decl2(JSParseState *s,
     if (js_is_live_code(s)) {
         emit_return(s, FALSE);
     }
-done:
+
     s->cur_func = fd->parent;
 
     /* create the function object */
