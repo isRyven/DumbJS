@@ -26134,23 +26134,6 @@ static JSValue js_number_constructor(JSContext *ctx, JSValueConst new_target,
     }
 }
 
-#if 0
-static JSValue js_number___toInteger(JSContext *ctx, JSValueConst this_val,
-                                     int argc, JSValueConst *argv)
-{
-    return JS_ToIntegerFree(ctx, JS_DupValue(ctx, argv[0]));
-}
-
-static JSValue js_number___toLength(JSContext *ctx, JSValueConst this_val,
-                                    int argc, JSValueConst *argv)
-{
-    int64_t v;
-    if (JS_ToLengthFree(ctx, &v, JS_DupValue(ctx, argv[0])))
-        return JS_EXCEPTION;
-    return JS_NewInt64(ctx, v);
-}
-#endif
-
 static JSValue js_number_isNaN(JSContext *ctx, JSValueConst this_val,
                                int argc, JSValueConst *argv)
 {
@@ -27693,19 +27676,6 @@ static const JSCFunctionListEntry js_math_obj[] = {
 
 /* Date */
 
-#if 0
-/* OS dependent: return the UTC time in ms since 1970. */
-static JSValue js___date_now(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv)
-{
-    int64_t d;
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    d = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
-    return JS_NewInt64(ctx, d);
-}
-#endif
-
 /* OS dependent: return the UTC time in microseconds since 1970. */
 static JSValue js___date_clock(JSContext *ctx, JSValueConst this_val,
                                int argc, JSValueConst *argv)
@@ -27753,36 +27723,6 @@ static int getTimezoneOffset(int64_t time) {
     return -tm.tm_gmtoff / 60;
 #endif
 }
-
-#if 0
-static JSValue js___date_getTimezoneOffset(JSContext *ctx, JSValueConst this_val,
-                                           int argc, JSValueConst *argv)
-{
-    double dd;
-
-    if (JS_ToFloat64(ctx, &dd, argv[0]))
-        return JS_EXCEPTION;
-    if (isnan(dd))
-        return __JS_NewFloat64(ctx, dd);
-    else
-        return JS_NewInt32(ctx, getTimezoneOffset((int64_t)dd));
-}
-
-/* create a new date object */
-static JSValue js___date_create(JSContext *ctx, JSValueConst this_val,
-                                int argc, JSValueConst *argv)
-{
-    JSValue obj, proto;
-    proto = js_get_prototype_from_ctor(ctx, argv[0], argv[1]);
-    if (JS_IsException(proto))
-        return proto;
-    obj = JS_NewObjectProtoClass(ctx, proto, JS_CLASS_DATE);
-    JS_FreeValue(ctx, proto);
-    if (!JS_IsException(obj))
-        JS_SetObjectData(ctx, obj, JS_DupValue(ctx, argv[2]));
-    return obj;
-}
-#endif
 
 /* RegExp */
 
@@ -30263,16 +30203,7 @@ static void JS_AddIntrinsicBasicObjects(JSContext *ctx)
                                            ctx->class_proto[JS_CLASS_OBJECT]);
     ctx->class_proto[JS_CLASS_BYTECODE_FUNCTION] = JS_DupValue(ctx, ctx->function_proto);
     ctx->class_proto[JS_CLASS_ERROR] = JS_NewObject(ctx);
-#if 0
-    /* these are auto-initialized from js_error_proto_funcs,
-       but delaying might be a problem */
-    JS_DefinePropertyValue(ctx, ctx->class_proto[JS_CLASS_ERROR], JS_ATOM_name,
-                           JS_AtomToString(ctx, JS_ATOM_Error),
-                           JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
-    JS_DefinePropertyValue(ctx, ctx->class_proto[JS_CLASS_ERROR], JS_ATOM_message,
-                           JS_AtomToString(ctx, JS_ATOM_empty_string),
-                           JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
-#endif
+
     JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_ERROR],
                                js_error_proto_funcs,
                                countof(js_error_proto_funcs));
