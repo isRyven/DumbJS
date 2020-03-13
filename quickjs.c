@@ -10609,30 +10609,6 @@ static __exception int js_for_of_start(JSContext *ctx, JSValue *sp)
     return 0;
 }
 
-/* enum_rec -> enum_rec value done */
-static __exception int js_for_of_next(JSContext *ctx, JSValue *sp, int offset)
-{
-    JSValue value = JS_UNDEFINED;
-    int done = 1;
-
-    if (likely(!JS_IsUndefined(sp[offset]))) {
-        value = JS_IteratorNext(ctx, sp[offset], sp[offset + 1], 0, NULL, &done);
-        if (JS_IsException(value))
-            done = -1;
-        if (done) {
-            /* value is JS_UNDEFINED or JS_EXCEPTION */
-            /* replace the iteration object with undefined */
-            JS_FreeValue(ctx, sp[offset]);
-            sp[offset] = JS_UNDEFINED;
-            if (done < 0)
-                return -1;
-        }
-    }
-    sp[0] = value;
-    sp[1] = JS_NewBool(ctx, done);
-    return 0;
-}
-
 static JSValue JS_IteratorGetCompleteValue(JSContext *ctx, JSValueConst obj,
                                            BOOL *pdone)
 {
@@ -12386,21 +12362,6 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
             if (js_for_in_next(ctx, sp))
                 goto exception;
             sp += 2;
-            BREAK;
-        CASE(OP_for_of_start):
-            if (js_for_of_start(ctx, sp))
-                goto exception;
-            sp += 1;
-            *sp++ = JS_NewCatchOffset(ctx, 0);
-            BREAK;
-        CASE(OP_for_of_next):
-            {
-                int offset = -3 - pc[0];
-                pc += 1;
-                if (js_for_of_next(ctx, sp, offset))
-                    goto exception;
-                sp += 2;
-            }
             BREAK;
         CASE(OP_iterator_get_value_done):
             if (js_iterator_get_value_done(ctx, sp))
@@ -15601,8 +15562,7 @@ static int js_parse_skip_parens_token(JSParseState *s, int *pbits, BOOL no_line_
         }
         /* last_tok is only used to recognize regexps */
         if (s->token.val == TOK_IDENT &&
-            (token_is_pseudo_keyword(s, JS_ATOM_of) ||
-             token_is_pseudo_keyword(s, JS_ATOM_yield))) {
+            (token_is_pseudo_keyword(s, JS_ATOM_of))) {
             last_tok = TOK_OF;
         } else {
             last_tok = s->token.val;
@@ -17103,20 +17063,18 @@ static BOOL is_label(JSParseState *s)
 
 /* XXX: handle IteratorClose when exiting the loop before the
    enumeration is done */
-static __exception int js_parse_for_in_of(JSParseState *s, int label_name)
+static __exception int js_parse_for_in(JSParseState *s, int label_name)
 {
     JSContext *ctx = s->ctx;
     JSFunctionDef *fd = s->cur_func;
     JSAtom var_name;
-    BOOL has_initializer, is_for_of, has_destructuring;
+    BOOL has_initializer;
     int tok, opcode, scope, block_scope_level;
     int label_next, label_expr, label_cont, label_body, label_break;
     int pos_next, pos_expr;
     BlockEnv break_entry;
 
     has_initializer = FALSE;
-    has_destructuring = FALSE;
-    is_for_of = FALSE;
     block_scope_level = fd->scope_level;
     label_cont = new_label(s);
     label_body = new_label(s);
@@ -17208,41 +17166,26 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name)
     }
     JS_FreeAtom(ctx, var_name);
 
-    if (token_is_pseudo_keyword(s, JS_ATOM_of)) {
-        break_entry.has_iterator = is_for_of = TRUE;
-        break_entry.drop_count += 2;
-        if (has_initializer)
-            goto initializer_error;
-    } else if (s->token.val == TOK_IN) {
+    if (s->token.val == TOK_IN) {
         if (has_initializer &&
-            (tok != TOK_VAR || (fd->js_mode & JS_MODE_STRICT) ||
-             has_destructuring)) {
-        initializer_error:
-            return js_parse_error(s, "a declaration in the head of a for-%s loop can't have an initializer",
-                                  is_for_of ? "of" : "in");
+            (tok != TOK_VAR || (fd->js_mode & JS_MODE_STRICT))) {
+            return js_parse_error(s, "a declaration in the head of a for-in loop can't have an initializer");
         }
     } else {
-        return js_parse_error(s, "expected 'of' or 'in' in for control expression");
+        return js_parse_error(s, "expected 'in' in for control expression");
     }
     if (next_token(s))
         return -1;
-    if (is_for_of) {
-        if (js_parse_assign_expr(s, TRUE))
-            return -1;
-    } else {
-        if (js_parse_expr(s))
-            return -1;
-    }
+    if (js_parse_expr(s))
+        return -1;
+
     /* close the scope after having evaluated the expression so that
        the TDZ values are in the closures */
     close_scopes(s, s->cur_func->scope_level, block_scope_level);
-    if (is_for_of) {
-        emit_op(s, OP_for_of_start);
-        /* on stack: enum_rec */
-    } else {
-        emit_op(s, OP_for_in_start);
-        /* on stack: enum_obj */
-    }
+
+    emit_op(s, OP_for_in_start);
+    /* on stack: enum_obj */
+
     emit_goto(s, OP_goto, label_cont);
 
     if (js_parse_expect(s, ')'))
@@ -17274,24 +17217,16 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name)
     close_scopes(s, s->cur_func->scope_level, block_scope_level);
 
     emit_label(s, label_cont);
-    if (is_for_of) {
-        emit_op(s, OP_for_of_next);
-        emit_u8(s, 0);
-    } else {
-        emit_op(s, OP_for_in_next);
-    }
+    emit_op(s, OP_for_in_next);
+
     /* on stack: enum_rec / enum_obj value bool */
     emit_goto(s, OP_if_false, label_next);
     /* drop the undefined value from for_xx_next */
     emit_op(s, OP_drop);
 
     emit_label(s, label_break);
-    if (is_for_of) {
-        /* close and drop enum_rec */
-        emit_op(s, OP_iterator_close);
-    } else {
-        emit_op(s, OP_drop);
-    }
+    emit_op(s, OP_drop);
+
     pop_break_entry(s->cur_func);
     pop_scope(s);
     return 0;
@@ -17522,7 +17457,7 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
 
             if (!(bits & SKIP_HAS_SEMI)) {
                 /* parse for/in or for/of */
-                if (js_parse_for_in_of(s, label_name))
+                if (js_parse_for_in(s, label_name))
                     goto fail;
                 break;
             }
