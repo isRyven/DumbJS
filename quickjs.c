@@ -14684,9 +14684,6 @@ static __exception int next_token(JSParseState *s)
         if (p[1] == '?') {
             p += 2;
             s->token.val = TOK_DOUBLE_QUESTION_MARK;
-        } else if (p[1] == '.' && !(p[2] >= '0' && p[2] <= '9')) {
-            p += 2;
-            s->token.val = TOK_QUESTION_MARK_DOT;
         } else {
             goto def_token;
         }
@@ -16168,27 +16165,9 @@ typedef enum FuncCallType {
     FUNC_CALL_NEW
 } FuncCallType;
 
-static void optional_chain_test(JSParseState *s, int *poptional_chaining_label,
-                                int drop_count)
-{
-    int label_next, i;
-    if (*poptional_chaining_label < 0)
-        *poptional_chaining_label = new_label(s);
-   /* XXX: could be more efficient with a specific opcode */
-    emit_op(s, OP_dup);
-    emit_op(s, OP_is_undefined_or_null);
-    label_next = emit_goto(s, OP_if_false, -1);
-    for(i = 0; i < drop_count; i++)
-        emit_op(s, OP_drop);
-    emit_op(s, OP_undefined);
-    emit_goto(s, OP_goto, *poptional_chaining_label);
-    emit_label(s, label_next);
-}
-
 static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen)
 {
     FuncCallType call_type;
-    int optional_chaining_label;
     
     call_type = FUNC_CALL_NORMAL;
     switch(s->token.val) {
@@ -16368,28 +16347,13 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
                               (int)(s->buf_ptr - s->token.ptr), s->token.ptr);
     }
 
-    optional_chaining_label = -1;
     for(;;) {
         JSFunctionDef *fd = s->cur_func;
-        BOOL has_optional_chain = FALSE;
-        
-        if (s->token.val == TOK_QUESTION_MARK_DOT) {
-            /* optional chaining */
-            if (next_token(s))
-                return -1;
-            has_optional_chain = TRUE;
-            if (s->token.val == '(' && accept_lparen) {
-                goto parse_func_call;
-            } else if (s->token.val == '[') {
-                goto parse_array_access;
-            } else {
-                goto parse_property;
-            }
-        } else if (s->token.val == '(' && accept_lparen) {
-            int opcode, arg_count, drop_count;
+
+        if (s->token.val == '(' && accept_lparen) {
+            int opcode, arg_count;
 
             /* function call */
-        parse_func_call:
             if (next_token(s))
                 return -1;
 
@@ -16398,17 +16362,14 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
                 case OP_get_field:
                     /* keep the object on the stack */
                     fd->byte_code.buf[fd->last_opcode_pos] = OP_get_field2;
-                    drop_count = 2;
                     break;
                 case OP_scope_get_private_field:
                     /* keep the object on the stack */
                     fd->byte_code.buf[fd->last_opcode_pos] = OP_scope_get_private_field2;
-                    drop_count = 2;
                     break;
                 case OP_get_array_el:
                     /* keep the object on the stack */
                     fd->byte_code.buf[fd->last_opcode_pos] = OP_get_array_el2;
-                    drop_count = 2;
                     break;
                 case OP_scope_get_var:
                     {
@@ -16433,23 +16394,16 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
                                 fd->byte_code.buf[fd->last_opcode_pos] = opcode;
                             }
                         }
-                        drop_count = 1;
                     }
                     break;
                 case OP_get_super_value:
                     fd->byte_code.buf[fd->last_opcode_pos] = OP_get_array_el;
                     /* on stack: this func_obj */
                     opcode = OP_get_array_el;
-                    drop_count = 2;
                     break;
                 default:
                     opcode = OP_invalid;
-                    drop_count = 1;
                     break;
-                }
-                if (has_optional_chain) {
-                    optional_chain_test(s, &optional_chaining_label,
-                                        drop_count);
                 }
             } else {
                 opcode = OP_invalid;
@@ -16598,36 +16552,21 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
         } else if (s->token.val == '.') {
             if (next_token(s))
                 return -1;
-            parse_property:
+
             if (!token_is_ident(s->token.val)) {
                 return js_parse_error(s, "expecting field name");
             }
-            if (get_prev_opcode(fd) == OP_get_super) {
-                JSValue val;
-                int ret;
-                val = JS_AtomToValue(s->ctx, s->token.u.ident.atom);
-                ret = emit_push_const(s, val, 1);
-                JS_FreeValue(s->ctx, val);
-                if (ret)
-                    return -1;
-                emit_op(s, OP_get_super_value);
-            } else {
-                if (has_optional_chain) {
-                    optional_chain_test(s, &optional_chaining_label, 1);
-                }
-                emit_op(s, OP_get_field);
-                emit_atom(s, s->token.u.ident.atom);
-            }
+            
+            emit_op(s, OP_get_field);
+            emit_atom(s, s->token.u.ident.atom);
+
             if (next_token(s))
                 return -1;
         } else if (s->token.val == '[') {
             int prev_op;
 
-        parse_array_access:
             prev_op = get_prev_opcode(fd);
-            if (has_optional_chain) {
-                optional_chain_test(s, &optional_chaining_label, 1);
-            }
+        
             if (next_token(s))
                 return -1;
             if (js_parse_expr(s))
@@ -16643,8 +16582,7 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
             break;
         }
     }
-    if (optional_chaining_label >= 0)
-        emit_label(s, optional_chaining_label);
+
     return 0;
 }
 
