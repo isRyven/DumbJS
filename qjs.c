@@ -142,16 +142,6 @@ static uint8_t *js_load_file(JSContext *ctx, size_t *pbuf_len, const char *filen
     return buf;
 }
 
-static void js_std_promise_rejection_tracker(JSContext *ctx, JSValueConst promise,
-                                      JSValueConst reason,
-                                      BOOL is_handled, void *opaque)
-{
-    if (!is_handled) {
-        printf("Possibly unhandled promise rejection: ");
-        js_std_dump_error1(ctx, reason, FALSE);
-    }
-}
-
 /* load and evaluate a file */
 static JSValue js_loadScript(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv)
@@ -456,7 +446,6 @@ int main(int argc, char **argv)
     int trace_memory = 0;
     int empty_run = 0;
     int module = -1;
-    int dump_unhandled_promise_rejection = 0;
     size_t memory_limit = 0;
     char *include_list[32];
     int i, include_count = 0;
@@ -530,10 +519,6 @@ int main(int argc, char **argv)
                 trace_memory++;
                 continue;
             }
-            if (!strcmp(longopt, "unhandled-rejection")) {
-                dump_unhandled_promise_rejection = 1;
-                continue;
-            }
             if (opt == 'q' || !strcmp(longopt, "quit")) {
                 empty_run++;
                 continue;
@@ -571,11 +556,6 @@ int main(int argc, char **argv)
     if (!ctx) {
         fprintf(stderr, "qjs: cannot allocate JS context\n");
         exit(2);
-    }
-
-    if (dump_unhandled_promise_rejection) {
-        JS_SetHostPromiseRejectionTracker(rt, js_std_promise_rejection_tracker,
-                                          NULL);
     }
     
     if (!empty_run) {

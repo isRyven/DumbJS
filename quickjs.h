@@ -359,7 +359,6 @@ void JS_AddIntrinsicStringNormalize(JSContext *ctx);
 void JS_AddIntrinsicRegExpCompiler(JSContext *ctx);
 void JS_AddIntrinsicRegExp(JSContext *ctx);
 void JS_AddIntrinsicJSON(JSContext *ctx);
-void JS_AddIntrinsicPromise(JSContext *ctx);
 
 /* enable operator overloading */
 void JS_AddIntrinsicOperators(JSContext *ctx);
@@ -765,14 +764,6 @@ JSValue JS_ParseJSON(JSContext *ctx, const char *buf, size_t buf_len,
                      const char *filename);
 JSValue JS_JSONStringify(JSContext *ctx, JSValueConst obj,
                          JSValueConst replacer, JSValueConst space0);
-
-JSValue JS_NewPromiseCapability(JSContext *ctx, JSValue *resolving_funcs);
-
-/* is_handled = TRUE means that the rejection is handled */
-typedef void JSHostPromiseRejectionTracker(JSContext *ctx, JSValueConst promise,
-                                           JSValueConst reason,
-                                           JS_BOOL is_handled, void *opaque);
-void JS_SetHostPromiseRejectionTracker(JSRuntime *rt, JSHostPromiseRejectionTracker *cb, void *opaque);
 
 /* return != 0 if the JS code needs to be interrupted */
 typedef int JSInterruptHandler(JSRuntime *rt, void *opaque);
