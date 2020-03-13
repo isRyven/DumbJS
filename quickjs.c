@@ -15432,7 +15432,6 @@ static void pop_break_entry(JSFunctionDef *fd);
 
 
 #define PROP_TYPE_IDENT 0
-#define PROP_TYPE_VAR   1
 #define PROP_TYPE_GET   2
 #define PROP_TYPE_SET   3
 
@@ -15447,10 +15446,8 @@ static BOOL token_is_ident(int tok)
 /* if the property is an expression, name = JS_ATOM_NULL */
 static int __exception js_parse_property_name(JSParseState *s,
                                               JSAtom *pname,
-                                              BOOL allow_method, BOOL allow_var)
+                                              BOOL allow_method)
 {
-    int is_private = 0;
-    BOOL is_non_reserved_ident;
     JSAtom name;
     int prop_type;
     
@@ -15462,32 +15459,16 @@ static int __exception js_parse_property_name(JSParseState *s,
             name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
             if (next_token(s))
                 goto fail1;
-            if (s->token.val == ':' || s->token.val == ',' ||
-                s->token.val == '}' || s->token.val == '(') {
-                is_non_reserved_ident = TRUE;
-                goto ident_found;
-            }
             prop_type = PROP_TYPE_GET + (name == JS_ATOM_set);
             JS_FreeAtom(s->ctx, name);
         }
     }
 
     if (token_is_ident(s->token.val)) {
-        /* variable can only be a non-reserved identifier */
-        is_non_reserved_ident =
-            (s->token.val == TOK_IDENT && !s->token.u.ident.is_reserved);
         /* keywords and reserved words have a valid atom */
         name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
         if (next_token(s))
             goto fail1;
-    ident_found:
-        if (is_non_reserved_ident &&
-            prop_type == PROP_TYPE_IDENT && allow_var) {
-            if (!(s->token.val == ':' ||
-                  (s->token.val == '(' && allow_method))) {
-                prop_type = PROP_TYPE_VAR;
-            }
-        }
     } else if (s->token.val == TOK_STRING) {
         name = JS_ValueToAtom(s->ctx, s->token.u.str.str);
         if (name == JS_ATOM_NULL)
@@ -15504,26 +15485,17 @@ static int __exception js_parse_property_name(JSParseState *s,
             goto fail;
         if (next_token(s))
             goto fail1;
-    } else if (s->token.val == '[') {
-        if (next_token(s))
-            goto fail;
-        if (js_parse_expr(s))
-            goto fail;
-        if (js_parse_expect(s, ']'))
-            goto fail;
-        name = JS_ATOM_NULL;
     } else {
         goto invalid_prop;
     }
-    if (prop_type != PROP_TYPE_IDENT && prop_type != PROP_TYPE_VAR &&
-        s->token.val != '(') {
+    if (prop_type != PROP_TYPE_IDENT && s->token.val != '(') {
         JS_FreeAtom(s->ctx, name);
     invalid_prop:
         js_parse_error(s, "invalid property name");
         goto fail;
     }
     *pname = name;
-    return prop_type | is_private;
+    return prop_type;
  fail1:
     JS_FreeAtom(s->ctx, name);
  fail:
@@ -15692,20 +15664,6 @@ static void set_object_name(JSParseState *s, JSAtom name)
     }
 }
 
-static void set_object_name_computed(JSParseState *s)
-{
-    JSFunctionDef *fd = s->cur_func;
-    int opcode;
-
-    opcode = get_prev_opcode(fd);
-    if (opcode == OP_set_name) {
-        /* XXX: should free atom after OP_set_name? */
-        fd->byte_code.size = fd->last_opcode_pos;
-        fd->last_opcode_pos = -1;
-        emit_op(s, OP_set_name_computed);
-    }
-}
-
 static __exception int js_parse_object_literal(JSParseState *s)
 {
     JSAtom name = JS_ATOM_NULL;
@@ -15736,18 +15694,11 @@ static __exception int js_parse_object_literal(JSParseState *s)
             goto next;
         }
 
-        prop_type = js_parse_property_name(s, &name, TRUE, TRUE);
+        prop_type = js_parse_property_name(s, &name, TRUE);
         if (prop_type < 0)
             goto fail;
 
-        if (prop_type == PROP_TYPE_VAR) {
-            /* shortcut for x: x */
-            emit_op(s, OP_scope_get_var);
-            emit_atom(s, name);
-            emit_u16(s, s->cur_func->scope_level);
-            emit_op(s, OP_define_field);
-            emit_atom(s, name);
-        } else if (s->token.val == '(') {
+        if (s->token.val == '(') {
             BOOL is_getset = (prop_type == PROP_TYPE_GET ||
                               prop_type == PROP_TYPE_SET);
             JSParseFunctionEnum func_type;
@@ -15755,37 +15706,28 @@ static __exception int js_parse_object_literal(JSParseState *s)
             int op_flags;
 
             func_kind = JS_FUNC_NORMAL;
-            if (is_getset) {
-                func_type = JS_PARSE_FUNC_GETTER + prop_type - PROP_TYPE_GET;
-            } else {
-                func_type = JS_PARSE_FUNC_METHOD;
+            if (!is_getset) {
+               js_parse_expect(s, ':');
+               goto fail;
             }
+
+            func_type = JS_PARSE_FUNC_GETTER + prop_type - PROP_TYPE_GET;
+            
             if (js_parse_function_decl(s, func_type, func_kind, JS_ATOM_NULL,
                                        start_ptr, start_line))
                 goto fail;
-            if (name == JS_ATOM_NULL) {
-                emit_op(s, OP_define_method_computed);
-            } else {
-                emit_op(s, OP_define_method);
-                emit_atom(s, name);
-            }
-            if (is_getset) {
-                op_flags = OP_DEFINE_METHOD_GETTER +
-                    prop_type - PROP_TYPE_GET;
-            } else {
-                op_flags = OP_DEFINE_METHOD_METHOD;
-            }
+            
+            emit_op(s, OP_define_method);
+            emit_atom(s, name);
+
+            op_flags = OP_DEFINE_METHOD_GETTER + prop_type - PROP_TYPE_GET;
             emit_u8(s, op_flags | OP_DEFINE_METHOD_ENUMERABLE);
         } else {
             if (js_parse_expect(s, ':'))
                 goto fail;
             if (js_parse_assign_expr(s, TRUE))
                 goto fail;
-            if (name == JS_ATOM_NULL) {
-                set_object_name_computed(s);
-                emit_op(s, OP_define_array_el);
-                emit_op(s, OP_drop);
-            } else if (name == JS_ATOM___proto__) {
+            if (name == JS_ATOM___proto__) {
                 if (has_proto) {
                     js_parse_error(s, "duplicate __proto__ property name");
                     goto fail;
