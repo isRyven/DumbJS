@@ -192,7 +192,7 @@ struct JSRuntime {
 
     JSInterruptHandler *interrupt_handler;
     void *interrupt_opaque;
-        
+
     struct list_head job_list; /* list of JSJobEntry.link */
 
     BOOL can_block : 8; /* TRUE if Atomics.wait can block */
@@ -28685,77 +28685,6 @@ static JSValue js_string_iterator_next(JSContext *ctx, JSValueConst this_val,
     }
 }
 
-/* ES6 Annex B 2.3.2 etc. */
-enum {
-    magic_string_anchor,
-    magic_string_big,
-    magic_string_blink,
-    magic_string_bold,
-    magic_string_fixed,
-    magic_string_fontcolor,
-    magic_string_fontsize,
-    magic_string_italics,
-    magic_string_link,
-    magic_string_small,
-    magic_string_strike,
-    magic_string_sub,
-    magic_string_sup,
-};
-
-static JSValue js_string_CreateHTML(JSContext *ctx, JSValueConst this_val,
-                                    int argc, JSValueConst *argv, int magic)
-{
-    JSValue str;
-    const JSString *p;
-    StringBuffer b_s, *b = &b_s;
-    static struct { const char *tag, *attr; } const defs[] = {
-        { "a", "name" }, { "big", NULL }, { "blink", NULL }, { "b", NULL },
-        { "tt", NULL }, { "font", "color" }, { "font", "size" }, { "i", NULL },
-        { "a", "href" }, { "small", NULL }, { "strike", NULL }, 
-        { "sub", NULL }, { "sup", NULL },
-    };
-
-    str = JS_ToStringCheckObject(ctx, this_val);
-    if (JS_IsException(str))
-        return JS_EXCEPTION;
-    string_buffer_init(ctx, b, 7);
-    string_buffer_putc8(b, '<');
-    string_buffer_puts8(b, defs[magic].tag);
-    if (defs[magic].attr) {
-        // r += " " + attr + "=\"" + value + "\"";
-        JSValue value;
-        int i;
-
-        string_buffer_putc8(b, ' ');
-        string_buffer_puts8(b, defs[magic].attr);
-        string_buffer_puts8(b, "=\"");
-        value = JS_ToStringCheckObject(ctx, argv[0]);
-        if (JS_IsException(value)) {
-            JS_FreeValue(ctx, str);
-            string_buffer_free(b);
-            return JS_EXCEPTION;
-        }
-        p = JS_VALUE_GET_STRING(value);
-        for (i = 0; i < p->len; i++) {
-            int c = string_get(p, i);
-            if (c == '"') {
-                string_buffer_puts8(b, "&quot;");
-            } else {
-                string_buffer_putc16(b, c);
-            }
-        }
-        JS_FreeValue(ctx, value);
-        string_buffer_putc8(b, '\"');
-    }
-    // return r + ">" + str + "</" + tag + ">";
-    string_buffer_putc8(b, '>');
-    string_buffer_concat_value_free(b, str);
-    string_buffer_puts8(b, "</");
-    string_buffer_puts8(b, defs[magic].tag);
-    string_buffer_putc8(b, '>');
-    return string_buffer_end(b);
-}
-
 static const JSCFunctionListEntry js_string_funcs[] = {
     JS_CFUNC_DEF("fromCharCode", 1, js_string_fromCharCode ),
     JS_CFUNC_DEF("fromCodePoint", 1, js_string_fromCodePoint ),
@@ -28804,20 +28733,6 @@ static const JSCFunctionListEntry js_string_proto_funcs[] = {
     JS_CFUNC_MAGIC_DEF("toLocaleLowerCase", 0, js_string_toLowerCase, 1 ),
     JS_CFUNC_MAGIC_DEF("toLocaleUpperCase", 0, js_string_toLowerCase, 0 ),
     JS_CFUNC_MAGIC_DEF("[Symbol.iterator]", 0, js_create_array_iterator, JS_ITERATOR_KIND_VALUE | 4 ),
-    /* ES6 Annex B 2.3.2 etc. */
-    JS_CFUNC_MAGIC_DEF("anchor", 1, js_string_CreateHTML, magic_string_anchor ),
-    JS_CFUNC_MAGIC_DEF("big", 0, js_string_CreateHTML, magic_string_big ),
-    JS_CFUNC_MAGIC_DEF("blink", 0, js_string_CreateHTML, magic_string_blink ),
-    JS_CFUNC_MAGIC_DEF("bold", 0, js_string_CreateHTML, magic_string_bold ),
-    JS_CFUNC_MAGIC_DEF("fixed", 0, js_string_CreateHTML, magic_string_fixed ),
-    JS_CFUNC_MAGIC_DEF("fontcolor", 1, js_string_CreateHTML, magic_string_fontcolor ),
-    JS_CFUNC_MAGIC_DEF("fontsize", 1, js_string_CreateHTML, magic_string_fontsize ),
-    JS_CFUNC_MAGIC_DEF("italics", 0, js_string_CreateHTML, magic_string_italics ),
-    JS_CFUNC_MAGIC_DEF("link", 1, js_string_CreateHTML, magic_string_link ),
-    JS_CFUNC_MAGIC_DEF("small", 0, js_string_CreateHTML, magic_string_small ),
-    JS_CFUNC_MAGIC_DEF("strike", 0, js_string_CreateHTML, magic_string_strike ),
-    JS_CFUNC_MAGIC_DEF("sub", 0, js_string_CreateHTML, magic_string_sub ),
-    JS_CFUNC_MAGIC_DEF("sup", 0, js_string_CreateHTML, magic_string_sup ),
 };
 
 static const JSCFunctionListEntry js_string_iterator_proto_funcs[] = {
