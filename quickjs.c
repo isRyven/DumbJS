@@ -9602,9 +9602,6 @@ static no_inline __exception int js_binary_arith_slow(JSContext *ctx, JSValue *s
     case OP_mod:
         r = fmod(d1, d2);
         break;
-    case OP_pow:
-        r = js_pow(d1, d2);
-        break;
     default:
         abort();
     }
@@ -14495,14 +14492,6 @@ static __exception int next_token(JSParseState *s)
         if (p[1] == '=') {
             p += 2;
             s->token.val = TOK_MUL_ASSIGN;
-        } else if (p[1] == '*') {
-            if (p[2] == '=') {
-                p += 3;
-                s->token.val = TOK_POW_ASSIGN;
-            } else {
-                p += 2;
-                s->token.val = TOK_POW;
-            }
         } else {
             goto def_token;
         }
@@ -16507,24 +16496,6 @@ static __exception int js_parse_unary(JSParseState *s, int exponentiation_flag)
         }
         break;
     }
-    if (exponentiation_flag) {
-        if (s->token.val == TOK_POW) {
-            /* Strict ES7 exponentiation syntax rules: To solve
-               conficting semantics between different implementations
-               regarding the precedence of prefix operators and the
-               postifx exponential, ES7 specifies that -2**2 is a
-               syntax error. */
-            if (exponentiation_flag < 0) {
-                JS_ThrowSyntaxError(s->ctx, "unparenthesized unary expression can't appear on the left-hand side of '**'");
-                return -1;
-            }
-            if (next_token(s))
-                return -1;
-            if (js_parse_unary(s, 1))
-                return -1;
-            emit_op(s, OP_pow);
-        }
-    }
     return 0;
 }
 
@@ -16751,7 +16722,7 @@ static __exception int js_parse_assign_expr(JSParseState *s, BOOL in_accepted)
         return -1;
 
     op = s->token.val;
-    if (op == '=' || (op >= TOK_MUL_ASSIGN && op <= TOK_POW_ASSIGN)) {
+    if (op == '=' || (op >= TOK_MUL_ASSIGN && op < TOK_POW_ASSIGN)) {
         int label;
         if (next_token(s))
             return -1;
@@ -16770,8 +16741,7 @@ static __exception int js_parse_assign_expr(JSParseState *s, BOOL in_accepted)
         } else {
             static const uint8_t assign_opcodes[] = {
                 OP_mul, OP_div, OP_mod, OP_add, OP_sub,
-                OP_shl, OP_sar, OP_shr, OP_and, OP_xor, OP_or,
-                OP_pow,
+                OP_shl, OP_sar, OP_shr, OP_and, OP_xor, OP_or
             };
             op = assign_opcodes[op - TOK_MUL_ASSIGN];
             emit_op(s, op);
