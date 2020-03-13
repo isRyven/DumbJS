@@ -15708,7 +15708,6 @@ static __exception int js_parse_object_literal(JSParseState *s)
             }
         }
         JS_FreeAtom(s->ctx, name);
-    next:
         name = JS_ATOM_NULL;
         if (s->token.val != ',')
             break;
@@ -15867,7 +15866,7 @@ static __exception int get_lvalue(JSParseState *s, int *popcode, int *pscope,
             (fd->js_mode & JS_MODE_STRICT)) {
             return js_parse_error(s, "invalid lvalue in strict mode");
         }
-        if (name == JS_ATOM_this || name == JS_ATOM_new_target)
+        if (name == JS_ATOM_this)
             goto invalid_lvalue;
         depth = 2;  /* will generate OP_get_ref_value */
         break;
@@ -16248,30 +16247,17 @@ static __exception int js_parse_postfix_expr(JSParseState *s, BOOL accept_lparen
     case TOK_NEW:
         if (next_token(s))
             return -1;
-        if (s->token.val == '.') {
-            if (next_token(s))
-                return -1;
-            if (!token_is_pseudo_keyword(s, JS_ATOM_target))
-                return js_parse_error(s, "expecting target");
-            if (!s->cur_func->new_target_allowed)
-                return js_parse_error(s, "new.target only allowed within functions");
-            if (next_token(s))
-                return -1;
-            emit_op(s, OP_scope_get_var);
-            emit_atom(s, JS_ATOM_new_target);
+        
+        if (js_parse_postfix_expr(s, FALSE))
+            return -1;
+        accept_lparen = TRUE;
+        if (s->token.val != '(') {
+            /* new operator on an object */
+            emit_op(s, OP_dup);
+            emit_op(s, OP_call_constructor);
             emit_u16(s, 0);
         } else {
-            if (js_parse_postfix_expr(s, FALSE))
-                return -1;
-            accept_lparen = TRUE;
-            if (s->token.val != '(') {
-                /* new operator on an object */
-                emit_op(s, OP_dup);
-                emit_op(s, OP_call_constructor);
-                emit_u16(s, 0);
-            } else {
-                call_type = FUNC_CALL_NEW;
-            }
+            call_type = FUNC_CALL_NEW;
         }
         break;
     case TOK_SUPER:
@@ -16464,7 +16450,7 @@ static __exception int js_parse_delete(JSParseState *s)
     case OP_scope_get_var:
         /* 'delete this': this is not a reference */
         name = get_u32(fd->byte_code.buf + fd->last_opcode_pos + 1);
-        if (name == JS_ATOM_this || name == JS_ATOM_new_target)
+        if (name == JS_ATOM_this)
             goto ret_true;
         if (fd->js_mode & JS_MODE_STRICT) {
             return js_parse_error(s, "cannot delete a direct reference in strict mode");
@@ -18795,10 +18781,6 @@ static int resolve_pseudo_var(JSContext *ctx, JSFunctionDef *s,
         /* 'this.active_func' pseudo variable */
         var_idx = s->this_active_func_var_idx = add_var(ctx, s, var_name);
         break;
-    case JS_ATOM_new_target:
-        /* 'new.target' pseudo variable */
-        var_idx = s->new_target_var_idx = add_var(ctx, s, var_name);
-        break;
     case JS_ATOM_this:
         /* 'this' pseudo variable */
         var_idx = s->this_var_idx = add_var_this(ctx, s);
@@ -18829,7 +18811,6 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
        resolve the pseudo variables */
     is_pseudo_var = (var_name == JS_ATOM_home_object ||
                      var_name == JS_ATOM_this_active_func ||
-                     var_name == JS_ATOM_new_target ||
                      var_name == JS_ATOM_this);
 
     /* resolve local scoped variables */
@@ -19299,8 +19280,6 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
     if (has_this_binding) {
         if (s->this_var_idx < 0)
             s->this_var_idx = add_var_this(ctx, s);
-        if (s->new_target_var_idx < 0)
-            s->new_target_var_idx = add_var(ctx, s, JS_ATOM_new_target);
         if (s->is_derived_class_constructor && s->this_active_func_var_idx < 0)
             s->this_active_func_var_idx = add_var(ctx, s, JS_ATOM_this_active_func);
         if (s->has_home_object && s->home_object_var_idx < 0)
@@ -19330,8 +19309,6 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
         if (!has_this_binding && fd->has_this_binding) {
             if (fd->this_var_idx < 0)
                 fd->this_var_idx = add_var_this(ctx, fd);
-            if (fd->new_target_var_idx < 0)
-                fd->new_target_var_idx = add_var(ctx, fd, JS_ATOM_new_target);
             if (fd->is_derived_class_constructor && fd->this_active_func_var_idx < 0)
                 fd->this_active_func_var_idx = add_var(ctx, fd, JS_ATOM_this_active_func);
             if (fd->has_home_object && fd->home_object_var_idx < 0)
