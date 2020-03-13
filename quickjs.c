@@ -10564,23 +10564,6 @@ static int JS_IteratorClose(JSContext *ctx, JSValueConst enum_obj,
     return res;
 }
 
-/* obj -> enum_rec (3 slots) */
-static __exception int js_for_of_start(JSContext *ctx, JSValue *sp)
-{
-    JSValue op1, obj, method;
-    op1 = sp[-1];
-    obj = JS_GetIterator(ctx, op1);
-    if (JS_IsException(obj))
-        return -1;
-    JS_FreeValue(ctx, op1);
-    sp[-1] = obj;
-    method = JS_GetProperty(ctx, obj, JS_ATOM_next);
-    if (JS_IsException(method))
-        return -1;
-    sp[0] = method;
-    return 0;
-}
-
 static JSValue JS_IteratorGetCompleteValue(JSContext *ctx, JSValueConst obj,
                                            BOOL *pdone)
 {
@@ -25346,147 +25329,6 @@ fail:
     return JS_EXCEPTION;
 }
 
-static JSValue js_array_from(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv)
-{
-    // from(items, mapfn = void 0, this_arg = void 0)
-    JSValueConst items = argv[0], mapfn, this_arg;
-    JSValueConst args[2];
-    JSValue stack[2];
-    JSValue iter, r, v, v2, arrayLike;
-    int64_t k, len;
-    int done, mapping;
-
-    mapping = FALSE;
-    mapfn = JS_UNDEFINED;
-    this_arg = JS_UNDEFINED;
-    r = JS_UNDEFINED;
-    arrayLike = JS_UNDEFINED;
-    stack[0] = JS_UNDEFINED;
-    stack[1] = JS_UNDEFINED;
-
-    if (argc > 1) {
-        mapfn = argv[1];
-        if (!JS_IsUndefined(mapfn)) {
-            if (check_function(ctx, mapfn))
-                goto exception;
-            mapping = 1;
-            if (argc > 2)
-                this_arg = argv[2];
-        }
-    }
-    iter = JS_GetProperty(ctx, items, JS_ATOM_Symbol_iterator);
-    if (JS_IsException(iter))
-        goto exception;
-    if (!JS_IsUndefined(iter)) {
-        JS_FreeValue(ctx, iter);
-        if (JS_IsConstructor(ctx, this_val))
-            r = JS_CallConstructor(ctx, this_val, 0, NULL);
-        else
-            r = JS_NewArray(ctx);
-        if (JS_IsException(r))
-            goto exception;
-        stack[0] = JS_DupValue(ctx, items);
-        if (js_for_of_start(ctx, &stack[1]))
-            goto exception;
-        for (k = 0;; k++) {
-            v = JS_IteratorNext(ctx, stack[0], stack[1], 0, NULL, &done);
-            if (JS_IsException(v))
-                goto exception_close;
-            if (done)
-                break;
-            if (mapping) {
-                args[0] = v;
-                args[1] = JS_NewInt32(ctx, k);
-                v2 = JS_Call(ctx, mapfn, this_arg, 2, args);
-                JS_FreeValue(ctx, v);
-                v = v2;
-                if (JS_IsException(v))
-                    goto exception_close;
-            }
-            if (JS_DefinePropertyValueInt64(ctx, r, k, v,
-                                            JS_PROP_C_W_E | JS_PROP_THROW) < 0)
-                goto exception_close;
-        }
-    } else {
-        arrayLike = JS_ToObject(ctx, items);
-        if (JS_IsException(arrayLike))
-            goto exception;
-        if (js_get_length64(ctx, &len, arrayLike) < 0)
-            goto exception;
-        v = JS_NewInt64(ctx, len);
-        args[0] = v;
-        if (JS_IsConstructor(ctx, this_val)) {
-            r = JS_CallConstructor(ctx, this_val, 1, args);
-        } else {
-            r = js_array_constructor(ctx, JS_UNDEFINED, 1, args);
-        }
-        JS_FreeValue(ctx, v);
-        if (JS_IsException(r))
-            goto exception;
-        for(k = 0; k < len; k++) {
-            v = JS_GetPropertyInt64(ctx, arrayLike, k);
-            if (JS_IsException(v))
-                goto exception;
-            if (mapping) {
-                args[0] = v;
-                args[1] = JS_NewInt32(ctx, k);
-                v2 = JS_Call(ctx, mapfn, this_arg, 2, args);
-                JS_FreeValue(ctx, v);
-                v = v2;
-                if (JS_IsException(v))
-                    goto exception;
-            }
-            if (JS_DefinePropertyValueInt64(ctx, r, k, v,
-                                            JS_PROP_C_W_E | JS_PROP_THROW) < 0)
-                goto exception;
-        }
-    }
-    if (JS_SetProperty(ctx, r, JS_ATOM_length, JS_NewUint32(ctx, k)) < 0)
-        goto exception;
-    goto done;
-
- exception_close:
-    if (!JS_IsUndefined(stack[0]))
-        JS_IteratorClose(ctx, stack[0], TRUE);
- exception:
-    JS_FreeValue(ctx, r);
-    r = JS_EXCEPTION;
- done:
-    JS_FreeValue(ctx, arrayLike);
-    JS_FreeValue(ctx, stack[0]);
-    JS_FreeValue(ctx, stack[1]);
-    return r;
-}
-
-static JSValue js_array_of(JSContext *ctx, JSValueConst this_val,
-                           int argc, JSValueConst *argv)
-{
-    JSValue obj, args[1];
-    int i;
-
-    if (JS_IsConstructor(ctx, this_val)) {
-        args[0] = JS_NewInt32(ctx, argc);
-        obj = JS_CallConstructor(ctx, this_val, 1, (JSValueConst *)args);
-    } else {
-        obj = JS_NewArray(ctx);
-    }
-    if (JS_IsException(obj))
-        return JS_EXCEPTION;
-    for(i = 0; i < argc; i++) {
-        if (JS_CreateDataPropertyUint32(ctx, obj, i, JS_DupValue(ctx, argv[i]),
-                                        JS_PROP_THROW) < 0) {
-            goto fail;
-        }
-    }
-    if (JS_SetProperty(ctx, obj, JS_ATOM_length, JS_NewUint32(ctx, argc)) < 0) {
-    fail:
-        JS_FreeValue(ctx, obj);
-        return JS_EXCEPTION;
-    }
-    return obj;
-}
-
 static JSValue js_array_isArray(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv)
 {
@@ -25527,9 +25369,6 @@ static JSValue JS_ArraySpeciesCreate(JSContext *ctx, JSValueConst obj,
 
 static const JSCFunctionListEntry js_array_funcs[] = {
     JS_CFUNC_DEF("isArray", 1, js_array_isArray ),
-    JS_CFUNC_DEF("from", 1, js_array_from ),
-    JS_CFUNC_DEF("of", 0, js_array_of ),
-    JS_CGETSET_DEF("[Symbol.species]", js_get_this, NULL ),
 };
 
 static int JS_isConcatSpreadable(JSContext *ctx, JSValueConst obj)
@@ -25781,42 +25620,6 @@ exception:
     return JS_EXCEPTION;
 }
 
-static JSValue js_array_fill(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv)
-{
-    JSValue obj;
-    int64_t len, start, end;
-
-    obj = JS_ToObject(ctx, this_val);
-    if (js_get_length64(ctx, &len, obj))
-        goto exception;
-
-    start = 0;
-    if (argc > 1 && !JS_IsUndefined(argv[1])) {
-        if (JS_ToInt64Clamp(ctx, &start, argv[1], 0, len, len))
-            goto exception;
-    }
-
-    end = len;
-    if (argc > 2 && !JS_IsUndefined(argv[2])) {
-        if (JS_ToInt64Clamp(ctx, &end, argv[2], 0, len, len))
-            goto exception;
-    }
-
-    /* XXX: should special case fast arrays */
-    while (start < end) {
-        if (JS_SetPropertyInt64(ctx, obj, start,
-                                JS_DupValue(ctx, argv[0])) < 0)
-            goto exception;
-        start++;
-    }
-    return obj;
-
- exception:
-    JS_FreeValue(ctx, obj);
-    return JS_EXCEPTION;
-}
-
 static JSValue js_array_includes(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
 {
@@ -25950,68 +25753,6 @@ static JSValue js_array_lastIndexOf(JSContext *ctx, JSValueConst this_val,
     return JS_NewInt64(ctx, res);
 
  exception:
-    JS_FreeValue(ctx, obj);
-    return JS_EXCEPTION;
-}
-
-static JSValue js_array_find(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv, int findIndex)
-{
-    JSValueConst func, this_arg;
-    JSValueConst args[3];
-    JSValue obj, val, index_val, res;
-    int64_t len, k;
-
-    index_val = JS_UNDEFINED;
-    val = JS_UNDEFINED;
-    obj = JS_ToObject(ctx, this_val);
-    if (js_get_length64(ctx, &len, obj))
-        goto exception;
-
-    func = argv[0];
-    if (check_function(ctx, func))
-        goto exception;
-
-    this_arg = JS_UNDEFINED;
-    if (argc > 1)
-        this_arg = argv[1];
-
-    for(k = 0; k < len; k++) {
-        index_val = JS_NewInt64(ctx, k);
-        if (JS_IsException(index_val))
-            goto exception;
-        val = JS_GetPropertyValue(ctx, obj, index_val);
-        if (JS_IsException(val))
-            goto exception;
-        args[0] = val;
-        args[1] = index_val;
-        args[2] = this_val;
-        res = JS_Call(ctx, func, this_arg, 3, args);
-        if (JS_IsException(res))
-            goto exception;
-        if (JS_ToBoolFree(ctx, res)) {
-            if (findIndex) {
-                JS_FreeValue(ctx, val);
-                JS_FreeValue(ctx, obj);
-                return index_val;
-            } else {
-                JS_FreeValue(ctx, index_val);
-                JS_FreeValue(ctx, obj);
-                return val;
-            }
-        }
-        JS_FreeValue(ctx, val);
-        JS_FreeValue(ctx, index_val);
-    }
-    JS_FreeValue(ctx, obj);
-    if (findIndex)
-        return JS_NewInt32(ctx, -1);
-    else
-        return JS_UNDEFINED;
-
-exception:
-    JS_FreeValue(ctx, index_val);
-    JS_FreeValue(ctx, val);
     JS_FreeValue(ctx, obj);
     return JS_EXCEPTION;
 }
@@ -26362,141 +26103,6 @@ static JSValue js_array_slice(JSContext *ctx, JSValueConst this_val,
     return JS_EXCEPTION;
 }
 
-static JSValue js_array_copyWithin(JSContext *ctx, JSValueConst this_val,
-                                   int argc, JSValueConst *argv)
-{
-    JSValue obj;
-    int64_t len, from, to, final, count;
-
-    obj = JS_ToObject(ctx, this_val);
-    if (js_get_length64(ctx, &len, obj))
-        goto exception;
-
-    if (JS_ToInt64Clamp(ctx, &to, argv[0], 0, len, len))
-        goto exception;
-
-    if (JS_ToInt64Clamp(ctx, &from, argv[1], 0, len, len))
-        goto exception;
-
-    final = len;
-    if (argc > 2 && !JS_IsUndefined(argv[2])) {
-        if (JS_ToInt64Clamp(ctx, &final, argv[2], 0, len, len))
-            goto exception;
-    }
-
-    count = min_int64(final - from, len - to);
-
-    if (JS_CopySubArray(ctx, obj, to, from, count,
-                        (from < to && to < from + count) ? -1 : +1))
-        goto exception;
-
-    return obj;
-
- exception:
-    JS_FreeValue(ctx, obj);
-    return JS_EXCEPTION;
-}
-
-static int64_t JS_FlattenIntoArray(JSContext *ctx, JSValueConst target,
-                                   JSValueConst source, int64_t sourceLen,
-                                   int64_t targetIndex, int depth,
-                                   JSValueConst mapperFunction,
-                                   JSValueConst thisArg)
-{
-    JSValue element;
-    int64_t sourceIndex, elementLen;
-    int present, is_array;
-
-    for (sourceIndex = 0; sourceIndex < sourceLen; sourceIndex++) {
-        present = JS_TryGetPropertyInt64(ctx, source, sourceIndex, &element);
-        if (present < 0)
-            return -1;
-        if (!present)
-            continue;
-        if (!JS_IsUndefined(mapperFunction)) {
-            JSValueConst args[3] = { element, JS_NewInt64(ctx, sourceIndex), source };
-            element = JS_Call(ctx, mapperFunction, thisArg, 3, args);
-            JS_FreeValue(ctx, (JSValue)args[0]);
-            JS_FreeValue(ctx, (JSValue)args[1]);
-            if (JS_IsException(element))
-                return -1;
-        }
-        if (depth > 0) {
-            is_array = JS_IsArray(ctx, element);
-            if (is_array < 0)
-                goto fail;
-            if (is_array) {
-                if (js_get_length64(ctx, &elementLen, element) < 0)
-                    goto fail;
-                targetIndex = JS_FlattenIntoArray(ctx, target, element,
-                                                  elementLen, targetIndex,
-                                                  depth - 1,
-                                                  JS_UNDEFINED, JS_UNDEFINED);
-                if (targetIndex < 0)
-                    goto fail;
-                JS_FreeValue(ctx, element);
-                continue;
-            }
-        }
-        if (targetIndex >= MAX_SAFE_INTEGER) {
-            JS_ThrowTypeError(ctx, "Array too long");
-            goto fail;
-        }
-        if (JS_SetPropertyInt64(ctx, target, targetIndex, element) < 0)
-            return -1;
-        targetIndex++;
-    }
-    return targetIndex;
-
-fail:
-    JS_FreeValue(ctx, element);
-    return -1;
-}
-
-static JSValue js_array_flatten(JSContext *ctx, JSValueConst this_val,
-                                int argc, JSValueConst *argv, int map)
-{
-    JSValue obj, arr;
-    JSValueConst mapperFunction, thisArg;
-    int64_t sourceLen;
-    int depthNum;
-
-    arr = JS_UNDEFINED;
-    obj = JS_ToObject(ctx, this_val);
-    if (js_get_length64(ctx, &sourceLen, obj))
-        goto exception;
-
-    depthNum = 1;
-    mapperFunction = JS_UNDEFINED;
-    thisArg = JS_UNDEFINED;
-    if (map) {
-        mapperFunction = argv[0];
-        if (argc > 1) {
-            thisArg = argv[1];
-        }
-        if (check_function(ctx, mapperFunction))
-            goto exception;
-    } else {
-        if (argc > 0 && !JS_IsUndefined(argv[0])) {
-            if (JS_ToInt32Sat(ctx, &depthNum, argv[0]) < 0)
-                goto exception;
-        }
-    }
-    arr = JS_ArraySpeciesCreate(ctx, obj, JS_NewInt32(ctx, 0));
-    if (JS_IsException(arr))
-        goto exception;
-    if (JS_FlattenIntoArray(ctx, arr, obj, sourceLen, 0, depthNum,
-                            mapperFunction, thisArg) < 0)
-        goto exception;
-    JS_FreeValue(ctx, obj);
-    return arr;
-
-exception:
-    JS_FreeValue(ctx, obj);
-    JS_FreeValue(ctx, arr);
-    return JS_EXCEPTION;
-}
-
 /* Array sort */
 
 typedef struct ValueSlot {
@@ -26808,15 +26414,10 @@ static const JSCFunctionListEntry js_array_proto_funcs[] = {
     JS_CFUNC_MAGIC_DEF("filter", 1, js_array_every, special_filter ),
     JS_CFUNC_MAGIC_DEF("reduce", 1, js_array_reduce, special_reduce ),
     JS_CFUNC_MAGIC_DEF("reduceRight", 1, js_array_reduce, special_reduceRight ),
-    JS_CFUNC_DEF("fill", 1, js_array_fill ),
-    JS_CFUNC_MAGIC_DEF("find", 1, js_array_find, 0 ),
-    JS_CFUNC_MAGIC_DEF("findIndex", 1, js_array_find, 1 ),
     JS_CFUNC_DEF("indexOf", 1, js_array_indexOf ),
     JS_CFUNC_DEF("lastIndexOf", 1, js_array_lastIndexOf ),
-    JS_CFUNC_DEF("includes", 1, js_array_includes ),
     JS_CFUNC_MAGIC_DEF("join", 1, js_array_join, 0 ),
     JS_CFUNC_DEF("toString", 0, js_array_toString ),
-    JS_CFUNC_MAGIC_DEF("toLocaleString", 0, js_array_join, 1 ),
     JS_CFUNC_MAGIC_DEF("pop", 0, js_array_pop, 0 ),
     JS_CFUNC_MAGIC_DEF("push", 1, js_array_push, 0 ),
     JS_CFUNC_MAGIC_DEF("shift", 0, js_array_pop, 1 ),
@@ -26825,14 +26426,6 @@ static const JSCFunctionListEntry js_array_proto_funcs[] = {
     JS_CFUNC_DEF("sort", 1, js_array_sort ),
     JS_CFUNC_MAGIC_DEF("slice", 2, js_array_slice, 0 ),
     JS_CFUNC_MAGIC_DEF("splice", 2, js_array_slice, 1 ),
-    JS_CFUNC_DEF("copyWithin", 2, js_array_copyWithin ),
-    JS_CFUNC_MAGIC_DEF("flatMap", 1, js_array_flatten, 1 ),
-    JS_CFUNC_MAGIC_DEF("flat", 0, js_array_flatten, 0 ),
-    JS_CFUNC_MAGIC_DEF("flatten", 0, js_array_flatten, 0 ),
-    JS_CFUNC_MAGIC_DEF("values", 0, js_create_array_iterator, JS_ITERATOR_KIND_VALUE ),
-    JS_ALIAS_DEF("[Symbol.iterator]", "values" ),
-    JS_CFUNC_MAGIC_DEF("keys", 0, js_create_array_iterator, JS_ITERATOR_KIND_KEY ),
-    JS_CFUNC_MAGIC_DEF("entries", 0, js_create_array_iterator, JS_ITERATOR_KIND_KEY_AND_VALUE ),
 };
 
 static const JSCFunctionListEntry js_array_iterator_proto_funcs[] = {
@@ -32010,21 +31603,6 @@ void JS_AddIntrinsicBaseObjects(JSContext *ctx)
                                    ctx->class_proto[JS_CLASS_ARRAY]);
     JS_SetPropertyFunctionList(ctx, obj, js_array_funcs,
                                countof(js_array_funcs));
-
-    /* XXX: create auto_initializer */
-    {
-        /* initialize Array.prototype[Symbol.unscopables] */
-        char const unscopables[] = "copyWithin" "\0" "entries" "\0" "fill" "\0" "find" "\0"
-            "findIndex" "\0" "flat" "\0" "flatMap" "\0" "includes" "\0" "keys" "\0" "values" "\0";
-        const char *p = unscopables;
-        obj1 = JS_NewObjectProto(ctx, JS_NULL);
-        for(p = unscopables; *p; p += strlen(p) + 1) {
-            JS_DefinePropertyValueStr(ctx, obj1, p, JS_TRUE, JS_PROP_C_W_E);
-        }
-        JS_DefinePropertyValue(ctx, ctx->class_proto[JS_CLASS_ARRAY],
-                               JS_ATOM_Symbol_unscopables, obj1,
-                               JS_PROP_CONFIGURABLE);
-    }
 
     /* needed to initialize arguments[Symbol.iterator] */
     ctx->array_proto_values =
