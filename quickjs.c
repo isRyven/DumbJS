@@ -18111,30 +18111,26 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
                 push_scope(s);  /* catch variable */
                 emit_label(s, label_catch);
 
-                if (s->token.val == '{') {
-                    /* support optional-catch-binding feature */
-                    emit_op(s, OP_drop);    /* pop the exception object */
+                if (js_parse_expect(s, '('))
+                    goto fail;
+                if (!(s->token.val == TOK_IDENT && !s->token.u.ident.is_reserved)) {
+                    js_parse_error(s, "identifier expected");
+                    goto fail;
                 } else {
-                    if (js_parse_expect(s, '('))
+                    name = JS_DupAtom(ctx, s->token.u.ident.atom);
+                    if (next_token(s)
+                    ||  js_define_var(s, name, TOK_CATCH) < 0) {
+                        JS_FreeAtom(ctx, name);
                         goto fail;
-                    if (!(s->token.val == TOK_IDENT && !s->token.u.ident.is_reserved)) {
-                        js_parse_error(s, "identifier expected");
-                        goto fail;
-                    } else {
-                        name = JS_DupAtom(ctx, s->token.u.ident.atom);
-                        if (next_token(s)
-                        ||  js_define_var(s, name, TOK_CATCH) < 0) {
-                            JS_FreeAtom(ctx, name);
-                            goto fail;
-                        }
-                        /* store the exception value in the catch variable */
-                        emit_op(s, OP_scope_put_var);
-                        emit_u32(s, name);
-                        emit_u16(s, s->cur_func->scope_level);
                     }
-                    if (js_parse_expect(s, ')'))
-                        goto fail;
+                    /* store the exception value in the catch variable */
+                    emit_op(s, OP_scope_put_var);
+                    emit_u32(s, name);
+                    emit_u16(s, s->cur_func->scope_level);
                 }
+                if (js_parse_expect(s, ')'))
+                    goto fail;
+
                 /* XXX: should keep the address to nop it out if there is no finally block */
                 emit_goto(s, OP_catch, label_catch2);
 
