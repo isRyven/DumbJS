@@ -13939,6 +13939,9 @@ static __exception int next_token(JSParseState *s)
                     c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p);
                     if (c == CP_LS || c == CP_PS) {
                         s->got_lf = TRUE; /* considered as LF for ASI */
+                    } else if (c == -1) {
+                        js_parse_error(s, "unexpected character");
+                        goto fail;
                     }
                 } else {
                     p++;
@@ -13956,8 +13959,12 @@ static __exception int next_token(JSParseState *s)
                 if (*p >= 0x80) {
                     c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p);
                     /* LS or PS are considered as line terminator */
-                    if (c == CP_LS || c == CP_PS)
+                    if (c == CP_LS || c == CP_PS) {
                         break;
+                    } else if (c == -1) {
+                        js_parse_error(s, "unexpected character");
+                        goto fail;
+                    }
                 } else {
                     p++;
                 }
@@ -14008,6 +14015,10 @@ static __exception int next_token(JSParseState *s)
                 ident_has_escape = TRUE;
             } else if (c >= 128) {
                 c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p1);
+                if (c == -1) {
+                    js_parse_error(s, "unexpected character");
+                    goto fail;
+                }
             }
             /* XXX: check if c >= 0 and c <= 0x10FFFF */
             if (!lre_js_is_ident_next(c))
