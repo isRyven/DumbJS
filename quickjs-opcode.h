@@ -143,7 +143,6 @@ DEF(set_name_computed, 1, 2, 2, none)
 DEF(      set_proto, 1, 2, 1, none)
 DEF(set_home_object, 1, 2, 2, none)
 DEF(define_array_el, 1, 3, 2, none)
-DEF(         append, 1, 3, 2, none) /* append enumerated object, update length */
 DEF(copy_data_properties, 2, 3, 3, u8)
 DEF(  define_method, 6, 2, 1, atom_u8)
 DEF(define_method_computed, 2, 3, 1, u8) /* must come after define_method */
@@ -191,9 +190,6 @@ DEF(   make_var_ref, 5, 0, 2, atom)
 
 DEF(   for_in_start, 1, 1, 1, none)
 DEF(    for_in_next, 1, 1, 3, none)
-DEF(iterator_get_value_done, 1, 1, 2, none)
-DEF( iterator_close, 1, 3, 0, none)
-DEF(iterator_close_return, 1, 4, 4, none)
 
 /* arithmetic/logic operations */
 DEF(            neg, 1, 1, 1, none)
