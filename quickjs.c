@@ -14984,6 +14984,9 @@ static int __exception js_parse_property_name(JSParseState *s,
             name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
             if (next_token(s))
                 goto fail1;
+            if (s->token.val == ':' || s->token.val == '(') {
+                goto done;
+            }
             prop_type = PROP_TYPE_GET + (name == JS_ATOM_set);
             JS_FreeAtom(s->ctx, name);
         }
@@ -15013,6 +15016,7 @@ static int __exception js_parse_property_name(JSParseState *s,
     } else {
         goto invalid_prop;
     }
+done:
     if (prop_type != PROP_TYPE_IDENT && s->token.val != '(') {
         JS_FreeAtom(s->ctx, name);
     invalid_prop:
