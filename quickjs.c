@@ -21604,6 +21604,7 @@ static __exception int js_parse_function_decl(JSParseState *s,
 static __exception int js_parse_program(JSParseState *s)
 {
     JSFunctionDef *fd = s->cur_func;
+    int idx;
 
     if (next_token(s))
         return -1;
@@ -21614,12 +21615,21 @@ static __exception int js_parse_program(JSParseState *s)
     fd->is_global_var = (fd->eval_type == JS_EVAL_TYPE_GLOBAL) ||
         !(fd->js_mode & JS_MODE_STRICT);
 
+    /* hidden variable for the return value */
+    fd->eval_ret_idx = idx = add_var(s->ctx, fd, JS_ATOM__ret_);
+    if (idx < 0)
+        return -1;
+
     while (s->token.val != TOK_EOF) {
         if (js_parse_source_element(s))
             return -1;
     }
 
-    emit_op(s, OP_return_undef);
+    /* return the value of the hidden variable eval_ret_idx  */
+    emit_op(s, OP_get_loc);
+    emit_u16(s, fd->eval_ret_idx);
+
+    emit_op(s, OP_return);
 
     return 0;
 }
@@ -21646,6 +21656,8 @@ static JSValue JS_EvalFunctionInternal(JSContext *ctx, JSValue fun_obj,
     uint32_t tag;
 
     tag = JS_VALUE_GET_TAG(fun_obj);
+
+
     if (tag == JS_TAG_FUNCTION_BYTECODE) {
         fun_obj = js_closure(ctx, fun_obj, var_refs, sf);
         ret_val = JS_CallFree(ctx, fun_obj, this_obj, 0, NULL);
@@ -21699,7 +21711,10 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
     js_parse_init(ctx, s, input, input_len, filename);
     skip_shebang(s);
 
+
     eval_type = flags & JS_EVAL_TYPE_MASK;
+    
+
     if (eval_type == JS_EVAL_TYPE_DIRECT) {
         JSObject *p;
         sf = ctx->current_stack_frame;
