@@ -26359,13 +26359,13 @@ static JSValue js_string_match(JSContext *ctx, JSValueConst this_val,
     // match(rx), search(rx), matchAll(rx)
     // atom is JS_ATOM_Symbol_match, JS_ATOM_Symbol_search, or JS_ATOM_Symbol_matchAll
     JSValueConst O = this_val, regexp = argv[0], args[2];
-    JSValue S, rx, result, str;
+    JSValue S, rx, result;
     int args_len;
 
     if (JS_IsUndefined(O) || JS_IsNull(O))
         return JS_ThrowTypeError(ctx, "cannot convert to object");
 
-    if (!JS_IsUndefined(regexp) && !JS_IsNull(regexp)) {
+    if (!JS_IsUndefined(regexp) && !JS_IsNull(regexp) && js_is_regexp(ctx, regexp)) {
         if (atom == JS_ATOM_Symbol_match)
             return js_regexp_Symbol_match(ctx, regexp, 1, &O);
         else 
@@ -26376,16 +26376,19 @@ static JSValue js_string_match(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     args_len = 1;
     args[0] = regexp;
-    str = JS_UNDEFINED;
-    
     rx = JS_CallConstructor(ctx, ctx->regexp_ctor, args_len, args);
-    JS_FreeValue(ctx, str);
     if (JS_IsException(rx)) {
         JS_FreeValue(ctx, S);
         return JS_EXCEPTION;
     }
-    result = JS_InvokeFree(ctx, rx, atom, 1, (JSValueConst *)&S);
+
+    if (atom == JS_ATOM_Symbol_match)
+        result = js_regexp_Symbol_match(ctx, rx, 1, (JSValueConst *)&S);
+    else 
+        result = js_regexp_Symbol_search(ctx, rx, 1, (JSValueConst *)&S);    
+
     JS_FreeValue(ctx, S);
+    JS_FreeValue(ctx, rx);
     return result;
 }
 
@@ -26515,7 +26518,7 @@ static JSValue js_string_replace(JSContext *ctx, JSValueConst this_val,
     replaceValue_str = JS_UNDEFINED;
     repl_str = JS_UNDEFINED;
 
-    if (!JS_IsUndefined(searchValue) && !JS_IsNull(searchValue)) {
+    if (!JS_IsUndefined(searchValue) && !JS_IsNull(searchValue) && js_is_regexp(ctx, searchValue)) {
         if (is_replaceAll) {
             if (check_regexp_g_flag(ctx, searchValue) < 0)
                 return JS_EXCEPTION;
@@ -26620,7 +26623,7 @@ static JSValue js_string_split(JSContext *ctx, JSValueConst this_val,
     A = JS_UNDEFINED;
     R = JS_UNDEFINED;
 
-    if (!JS_IsUndefined(separator) && !JS_IsNull(separator)) {
+    if (!JS_IsUndefined(separator) && !JS_IsNull(separator) && js_is_regexp(ctx, separator)) {
         args[0] = O;
         args[1] = limit;
         return js_regexp_Symbol_split(ctx, separator, 2, args);
