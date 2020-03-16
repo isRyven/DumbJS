@@ -557,30 +557,32 @@ int lre_parse_escape(const uint8_t **pp, int allow_utf16)
             }
         }
         break;
-    case '0' ... '7':
-        c -= '0';
-        if (allow_utf16 == 2) {
-            /* only accept \0 not followed by digit */
-            if (c != 0 || is_digit(*p))
-                return -1;
-        } else {
-            /* parse a legacy octal sequence */
-            uint32_t v;
-            v = *p - '0';
-            if (v > 7)
-                break;
-            c = (c << 3) | v;
-            p++;
-            if (c >= 32)
-                break;
-            v = *p - '0';
-            if (v > 7)
-                break;
-            c = (c << 3) | v;
-            p++;
-        }
-        break;
     default:
+        if (c >= '0' && c <= '7') {
+            c -= '0';
+            if (allow_utf16 == 2) {
+                /* only accept \0 not followed by digit */
+                if (c != 0 || is_digit(*p))
+                    return -1;
+            } else {
+                /* parse a legacy octal sequence */
+                uint32_t v;
+                v = *p - '0';
+                if (v > 7)
+                    break;
+                c = (c << 3) | v;
+                p++;
+                if (c >= 32)
+                    break;
+                v = *p - '0';
+                if (v > 7)
+                    break;
+                c = (c << 3) | v;
+                p++;
+            }
+            break;
+        }
+
         return -2;
     }
     *pp = p;
@@ -1383,10 +1385,9 @@ static int re_parse_term(REParseState *s, BOOL is_backward_dir)
                 }
             }
             goto normal_char;
-        case '1' ... '9':
-            {
+        default:
+            if (p[1] >= '1' && p[1] <= '9') {
                 const uint8_t *q = ++p;
-                
                 c = parse_digits(&p);
                 if (c < 0 || (c >= s->capture_count && c >= re_count_captures(s))) {
                     if (!s->is_utf16) {
@@ -1413,9 +1414,8 @@ static int re_parse_term(REParseState *s, BOOL is_backward_dir)
                 last_atom_start = s->byte_code.size;
                 last_capture_count = s->capture_count;
                 re_emit_op_u8(s, REOP_back_reference + is_backward_dir, c);
+                break;
             }
-            break;
-        default:
             goto parse_class_atom;
         }
         break;

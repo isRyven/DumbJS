@@ -13518,11 +13518,13 @@ static void free_token(JSParseState *s, JSToken *token)
         JS_FreeValue(s->ctx, token->u.regexp.flags);
         break;
     case TOK_IDENT:
-    case TOK_FIRST_KEYWORD ... TOK_LAST_KEYWORD:
     case TOK_PRIVATE_NAME:
         JS_FreeAtom(s->ctx, token->u.ident.atom);
         break;
     default:
+        if (token->val >= TOK_FIRST_KEYWORD && token->val <= TOK_LAST_KEYWORD) {
+            JS_FreeAtom(s->ctx, token->u.ident.atom);
+        }
         break;
     }
 }
@@ -13982,64 +13984,6 @@ static __exception int next_token(JSParseState *s)
             }
         }
         goto def_token;
-    case 'a' ... 'z':
-    case 'A' ... 'Z':
-    case '_':
-    case '$':
-        /* identifier */
-        p++;
-        ident_has_escape = FALSE;
-    has_ident:
-        q = buf;
-        for(;;) {
-            const uint8_t *p1 = p;
-
-            if (c < 128) {
-                *q++ = c;
-            } else {
-                q += unicode_to_utf8((uint8_t*)q, c);
-            }
-            c = *p1++;
-            if (c == '\\' && *p1 == 'u') {
-                c = lre_parse_escape(&p1, TRUE);
-                ident_has_escape = TRUE;
-            } else if (c >= 128) {
-                c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p1);
-                if (c == -1) {
-                    js_parse_error(s, "unexpected character");
-                    goto fail;
-                }
-            }
-            /* XXX: check if c >= 0 and c <= 0x10FFFF */
-            if (!lre_js_is_ident_next(c))
-                break;
-            p = p1;
-            if ((q - buf) >= sizeof(buf) - UTF8_CHAR_LEN_MAX) {
-                js_parse_error(s, "identifier too long");
-                goto fail;
-            }
-        }
-        *q = '\0';
-        s->token.u.ident.atom = JS_NewAtomLen(s->ctx, buf, q - buf);
-        s->token.u.ident.has_escape = ident_has_escape;
-        s->token.u.ident.is_reserved = FALSE;
-        if (s->token.u.ident.atom <= JS_ATOM_LAST_KEYWORD) {
-              if (ident_has_escape) {
-                  s->token.u.ident.is_reserved = TRUE;
-                  s->token.val = TOK_IDENT;
-              } else {
-                  /* The keywords atoms are pre allocated */
-                  s->token.val = s->token.u.ident.atom - 1 + TOK_FIRST_KEYWORD;
-              }
-        } else {
-            if (s->token.u.ident.atom <= JS_ATOM_LAST_RESERVED_KEYWORD ||
-                (s->token.u.ident.atom <= JS_ATOM_LAST_RESERVED_STRICT_KEYWORD && 
-                    s->cur_func->js_mode & JS_MODE_STRICT)) {
-                s->token.u.ident.is_reserved = TRUE;
-            }
-            s->token.val = TOK_IDENT;
-        }
-        break;
     case '.':
         if (p[1] >= '0' && p[1] <= '9') {
             goto parse_number;
@@ -14055,36 +13999,6 @@ static __exception int next_token(JSParseState *s)
             goto fail;
         }
         goto parse_number;
-    case '1' ... '9':
-        /* number */
-    parse_number:
-        {
-            JSValue ret;
-            const uint8_t *p1;
-            int flags, radix;
-            if (!s->cur_func) {
-                flags = 0;
-                radix = 10;
-            } else {
-                flags = ATOD_ACCEPT_BIN_OCT | ATOD_ACCEPT_LEGACY_OCTAL |
-                    ATOD_ACCEPT_UNDERSCORES;
-                radix = 0;
-            }
-            ret = js_atof(s->ctx, (const char *)p, (const char **)&p, radix,
-                          flags);
-            if (JS_IsException(ret))
-                goto fail;
-            /* reject `10instanceof Number` */
-            if (JS_VALUE_IS_NAN(ret) ||
-                lre_js_is_ident_next(unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p1))) {
-                JS_FreeValue(s->ctx, ret);
-                js_parse_error(s, "invalid number literal");
-                goto fail;
-            }
-            s->token.val = TOK_NUMBER;
-            s->token.u.num.val = ret;
-        }
-        break;
     case '*':
         if (p[1] == '=') {
             p += 2;
@@ -14222,7 +14136,96 @@ static __exception int next_token(JSParseState *s)
     case '?':
         goto def_token;
     default:
-        if (c >= 128) {
+        if (
+            (c >= 'A' && c <= 'Z') || 
+            (c >= 'a' && c <= 'z') || 
+            (c == '_') || 
+            (c == '$')) {
+            /* identifier */
+            p++;
+            ident_has_escape = FALSE;
+        has_ident:
+            q = buf;
+            for(;;) {
+                const uint8_t *p1 = p;
+
+                if (c < 128) {
+                    *q++ = c;
+                } else {
+                    q += unicode_to_utf8((uint8_t*)q, c);
+                }
+                c = *p1++;
+                if (c == '\\' && *p1 == 'u') {
+                    c = lre_parse_escape(&p1, TRUE);
+                    ident_has_escape = TRUE;
+                } else if (c >= 128) {
+                    c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p1);
+                    if (c == -1) {
+                        js_parse_error(s, "unexpected character");
+                        goto fail;
+                    }
+                }
+                /* XXX: check if c >= 0 and c <= 0x10FFFF */
+                if (!lre_js_is_ident_next(c))
+                    break;
+                p = p1;
+                if ((q - buf) >= sizeof(buf) - UTF8_CHAR_LEN_MAX) {
+                    js_parse_error(s, "identifier too long");
+                    goto fail;
+                }
+            }
+            *q = '\0';
+            s->token.u.ident.atom = JS_NewAtomLen(s->ctx, buf, q - buf);
+            s->token.u.ident.has_escape = ident_has_escape;
+            s->token.u.ident.is_reserved = FALSE;
+            if (s->token.u.ident.atom <= JS_ATOM_LAST_KEYWORD) {
+                  if (ident_has_escape) {
+                      s->token.u.ident.is_reserved = TRUE;
+                      s->token.val = TOK_IDENT;
+                  } else {
+                      /* The keywords atoms are pre allocated */
+                      s->token.val = s->token.u.ident.atom - 1 + TOK_FIRST_KEYWORD;
+                  }
+            } else {
+                if (s->token.u.ident.atom <= JS_ATOM_LAST_RESERVED_KEYWORD ||
+                    (s->token.u.ident.atom <= JS_ATOM_LAST_RESERVED_STRICT_KEYWORD && 
+                        s->cur_func->js_mode & JS_MODE_STRICT)) {
+                    s->token.u.ident.is_reserved = TRUE;
+                }
+                s->token.val = TOK_IDENT;
+            }
+            break;
+        } else if (c >= '1' && c <= '9') {
+            /* number */
+        parse_number:
+            {
+                JSValue ret;
+                const uint8_t *p1;
+                int flags, radix;
+                if (!s->cur_func) {
+                    flags = 0;
+                    radix = 10;
+                } else {
+                    flags = ATOD_ACCEPT_BIN_OCT | ATOD_ACCEPT_LEGACY_OCTAL |
+                        ATOD_ACCEPT_UNDERSCORES;
+                    radix = 0;
+                }
+                ret = js_atof(s->ctx, (const char *)p, (const char **)&p, radix,
+                              flags);
+                if (JS_IsException(ret))
+                    goto fail;
+                /* reject `10instanceof Number` */
+                if (JS_VALUE_IS_NAN(ret) ||
+                    lre_js_is_ident_next(unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p1))) {
+                    JS_FreeValue(s->ctx, ret);
+                    js_parse_error(s, "invalid number literal");
+                    goto fail;
+                }
+                s->token.val = TOK_NUMBER;
+                s->token.u.num.val = ret;
+            }
+            break;
+        } else if (c >= 128) {
             /* unicode value */
             c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p);
             switch(c) {

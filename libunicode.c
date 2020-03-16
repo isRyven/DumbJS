@@ -527,38 +527,58 @@ static int unicode_decomp_entry(uint32_t *res, uint32_t c,
     } else {
         d = unicode_decomp_data + unicode_decomp_table2[idx];
         switch(type) {
-        case DECOMP_TYPE_L1 ... DECOMP_TYPE_L7:
-            l = type - DECOMP_TYPE_L1 + 1;
-            d += (c - code) * l * 2;
-            for(i = 0; i < l; i++) {
-                if ((res[i] = unicode_get16(d + 2 * i)) == 0)
-                    return 0;
-            }
-            return l;
-        case DECOMP_TYPE_LL1 ... DECOMP_TYPE_LL2:
-            {
-                uint32_t k, p;
-                l = type - DECOMP_TYPE_LL1 + 1;
-                k = (c - code) * l;
-                p = len * l * 2;
+        default:
+            if (type >= DECOMP_TYPE_L1 && type <= DECOMP_TYPE_L7) {
+                l = type - DECOMP_TYPE_L1 + 1;
+                d += (c - code) * l * 2;
                 for(i = 0; i < l; i++) {
-                    c1 = unicode_get16(d + 2 * k) |
-                        (((d[p + (k / 4)] >> ((k % 4) * 2)) & 3) << 16);
-                    if (!c1)
+                    if ((res[i] = unicode_get16(d + 2 * i)) == 0)
                         return 0;
-                    res[i] = c1;
-                    k++;
                 }
+                return l;
+            } else if (type >= DECOMP_TYPE_LL1 && type <= DECOMP_TYPE_LL2) {
+                {
+                    uint32_t k, p;
+                    l = type - DECOMP_TYPE_LL1 + 1;
+                    k = (c - code) * l;
+                    p = len * l * 2;
+                    for(i = 0; i < l; i++) {
+                        c1 = unicode_get16(d + 2 * k) |
+                            (((d[p + (k / 4)] >> ((k % 4) * 2)) & 3) << 16);
+                        if (!c1)
+                            return 0;
+                        res[i] = c1;
+                        k++;
+                    }
+                }
+                return l;
+            } else if (type >= DECOMP_TYPE_S1 && type <= DECOMP_TYPE_S5) {
+                l = type - DECOMP_TYPE_S1 + 1;
+                d += (c - code) * l;
+                for(i = 0; i < l; i++) {
+                    if ((res[i] = unicode_get_short_code(d[i])) == 0)
+                        return 0;
+                }
+                return l;
+            } else if (type >= DECOMP_TYPE_B1 && type <= DECOMP_TYPE_B8) {
+                l = type - DECOMP_TYPE_B1 + 1;
+            decomp_type_b:
+                {
+                    uint32_t c_min;
+                    c_min = unicode_get16(d);
+                    d += 2 + (c - code) * l;
+                    for(i = 0; i < l; i++) {
+                        c1 = d[i];
+                        if (c1 == 0xff)
+                            c1 = 0x20;
+                        else
+                            c1 += c_min;
+                        res[i] = c1;
+                    }
+                }
+                return l;
             }
-            return l;
-        case DECOMP_TYPE_S1 ... DECOMP_TYPE_S5:
-            l = type - DECOMP_TYPE_S1 + 1;
-            d += (c - code) * l;
-            for(i = 0; i < l; i++) {
-                if ((res[i] = unicode_get_short_code(d[i])) == 0)
-                    return 0;
-            }
-            return l;
+            break;
         case DECOMP_TYPE_I1:
             l = 1;
             p = 0;
@@ -582,23 +602,6 @@ static int unicode_decomp_entry(uint32_t *res, uint32_t c,
         case DECOMP_TYPE_B18:
             l = 18;
             goto decomp_type_b;
-        case DECOMP_TYPE_B1 ... DECOMP_TYPE_B8:
-            l = type - DECOMP_TYPE_B1 + 1;
-        decomp_type_b:
-            {
-                uint32_t c_min;
-                c_min = unicode_get16(d);
-                d += 2 + (c - code) * l;
-                for(i = 0; i < l; i++) {
-                    c1 = d[i];
-                    if (c1 == 0xff)
-                        c1 = 0x20;
-                    else
-                        c1 += c_min;
-                    res[i] = c1;
-                }
-            }
-            return l;
         case DECOMP_TYPE_LS2:
             d += (c - code) * 3;
             if (!(res[0] = unicode_get16(d)))

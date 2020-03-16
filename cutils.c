@@ -257,25 +257,20 @@ int unicode_from_utf8(const uint8_t *p, int max_len, const uint8_t **pp)
         *pp = p;
         return c;
     }
-    switch(c) {
-    case 0xc0 ... 0xdf:
+    if (c >= 0xc0 && c <= 0xdf) {
         l = 1;
-        break;
-    case 0xe0 ... 0xef:
+    } else if (c >= 0xe0 && c <= 0xef) {
         l = 2;
-        break;
-    case 0xf0 ... 0xf7:
+    } else if (c >= 0xf0 && c <= 0xf7) {
         l = 3;
-        break;
-    case 0xf8 ... 0xfb:
+    } else if (c >= 0xf8 && c <= 0xfb) {
         l = 4;
-        break;
-    case 0xfc ... 0xfd:
+    } else if (c >= 0xfc && c <= 0xfd) {
         l = 5;
-        break;
-    default:
+    } else {
         return -1;
     }
+    
     /* check that we have enough characters */
     if (l > (max_len - 1))
         return -1;
