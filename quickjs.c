@@ -13597,14 +13597,16 @@ int __attribute__((format(printf, 2, 3))) js_parse_error(JSParseState *s, const 
     return -1;
 }
 
-static int js_parse_expect(JSParseState *s, int tok)
+static int js_parse_expect2(JSParseState *s, int tok, const char *tok_name)
 {
     if (s->token.val != tok) {
         /* XXX: dump token correctly in all cases */
-        return js_parse_error(s, "expecting '%c'", tok);
+        return js_parse_error(s, "expecting %s", tok_name);
     }
     return next_token(s);
 }
+
+#define js_parse_expect(s, tok) js_parse_expect2(s, tok, #tok)
 
 static int js_parse_expect_semi(JSParseState *s)
 {
