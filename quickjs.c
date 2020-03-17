@@ -24774,7 +24774,7 @@ static JSValue js_array_every(JSContext *ctx, JSValueConst this_val,
     JSValue obj, val, index_val, res, ret;
     JSValueConst args[3];
     JSValueConst func, this_arg;
-    int64_t len, k;
+    int64_t len, k, n;
     int present;
 
     ret = JS_UNDEFINED;
@@ -24812,6 +24812,8 @@ static JSValue js_array_every(JSContext *ctx, JSValueConst this_val,
         break;
     }
 
+    n = 0;
+
     for(k = 0; k < len; k++) {
         present = JS_TryGetPropertyInt64(ctx, obj, k, &val);
         if (present < 0)
@@ -24829,13 +24831,29 @@ static JSValue js_array_every(JSContext *ctx, JSValueConst this_val,
                 goto exception;
             switch (special) {
             case special_every:
+                if (!JS_ToBoolFree(ctx, res)) {
+                    ret = JS_FALSE;
+                    goto done;
+                }
+                break;
             case special_some:
+                if (JS_ToBoolFree(ctx, res)) {
+                    ret = JS_TRUE;
+                    goto done;
+                }
+                break;
             case special_map:
                 if (JS_DefinePropertyValueInt64(ctx, ret, k, res,
                                                 JS_PROP_C_W_E | JS_PROP_THROW) < 0)
                     goto exception;
                 break;
             case special_filter:
+                if (JS_ToBoolFree(ctx, res)) {
+                    if (JS_DefinePropertyValueInt64(ctx, ret, n++, JS_DupValue(ctx, val),
+                                                    JS_PROP_C_W_E | JS_PROP_THROW) < 0)
+                        goto exception;
+                }
+                break;
             default:
                 JS_FreeValue(ctx, res);
                 break;
@@ -24844,7 +24862,8 @@ static JSValue js_array_every(JSContext *ctx, JSValueConst this_val,
             val = JS_UNDEFINED;
         }
     }
-
+    
+done:
     JS_FreeValue(ctx, val);
     JS_FreeValue(ctx, obj);
     return ret;
