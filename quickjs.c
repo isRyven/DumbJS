@@ -126,6 +126,8 @@ enum {
     JS_CLASS_ASYNC_FROM_SYNC_ITERATOR,  /* u.async_from_sync_iterator_data */
     JS_CLASS_ASYNC_GENERATOR_FUNCTION,  /* u.func */
     JS_CLASS_ASYNC_GENERATOR,   /* u.async_generator_data */
+    JS_CLASS_MATH,              /* for object_toString */
+    JS_CLASS_JSON,              /* for object_toString */
 
     JS_CLASS_INIT_COUNT, /* last entry for predefined classes */
 };
@@ -23177,6 +23179,10 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, JSObject *p,
         break;
     case JS_DEF_OBJECT:
         val = JS_NewObject(ctx);
+        if (e->magic) {
+            JSObject *p = JS_VALUE_GET_OBJ(val);
+            p->class_id = e->magic;
+        }
         JS_SetPropertyFunctionList(ctx, val, e->u.prop_list.tab, e->u.prop_list.len);
         break;
     default:
@@ -23876,6 +23882,12 @@ static JSValue js_object_toString(JSContext *ctx, JSValueConst this_val,
             case JS_CLASS_DATE:
             case JS_CLASS_REGEXP:
                 atom = ctx->rt->class_array[p->class_id].class_name;
+                break;
+            case JS_CLASS_MATH:
+                atom = JS_ATOM_Math;
+                break;
+            case JS_CLASS_JSON:
+                atom = JS_ATOM_JSON;
                 break;
             default:
                 atom = JS_ATOM_Object;
@@ -27131,7 +27143,7 @@ static const JSCFunctionListEntry js_math_funcs[] = {
 };
 
 static const JSCFunctionListEntry js_math_obj[] = {
-    JS_OBJECT_DEF("Math", js_math_funcs, countof(js_math_funcs), JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE ),
+    JS_OBJECT_DEF_CLASS("Math", JS_CLASS_MATH, js_math_funcs, countof(js_math_funcs), JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE ),
 };
 
 /* Date */
@@ -29068,7 +29080,7 @@ static const JSCFunctionListEntry js_json_funcs[] = {
 };
 
 static const JSCFunctionListEntry js_json_obj[] = {
-    JS_OBJECT_DEF("JSON", js_json_funcs, countof(js_json_funcs), JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE ),
+    JS_OBJECT_DEF_CLASS("JSON", JS_CLASS_JSON, js_json_funcs, countof(js_json_funcs), JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE ),
 };
 
 void JS_AddIntrinsicJSON(JSContext *ctx)

@@ -901,6 +901,8 @@ typedef struct JSCFunctionListEntry {
 #define JS_OBJECT_DEF(name, tab, len, prop_flags) { name, prop_flags, JS_DEF_OBJECT, 0, .u = { .prop_list = { tab, len } } }
 #define JS_ALIAS_DEF(name, from) { name, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE, JS_DEF_ALIAS, 0, .u = { .alias = { from, -1 } } }
 #define JS_ALIAS_BASE_DEF(name, from, base) { name, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE, JS_DEF_ALIAS, 0, .u = { .alias = { from, base } } }
+#define JS_OBJECT_DEF_CLASS(name, class_id, tab, len, prop_flags) { name, prop_flags, JS_DEF_OBJECT, class_id, .u = { .prop_list = { tab, len } } }
+
 
 void JS_SetPropertyFunctionList(JSContext *ctx, JSValueConst obj,
                                 const JSCFunctionListEntry *tab,
