@@ -1,0 +1,22 @@
+# DumbJS CI
+# Builds DumbJS
+# Runs test262
+
+trigger:
+- master
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- script: |
+    mkdir build && cd build
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DDUMBJS_EXAMPLES=ON
+    make
+  displayName: 'Build'
+
+- script: |
+    cd build
+    git clone https://github.com/isRyven/dumbjs-test262 tests
+    examples/djs tests/test-harness.js
+  displayName: 'Test'
