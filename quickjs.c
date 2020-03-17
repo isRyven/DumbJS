@@ -3813,6 +3813,11 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
         p->prop[0].u.value = JS_UNDEFINED;
         break;
     case JS_CLASS_ARGUMENTS:
+        p->is_exotic = 1;
+        p->fast_array = 1;
+        p->u.array.u.ptr = NULL;
+        p->u.array.count = 0;
+        break;
     case JS_CLASS_NUMBER:
     case JS_CLASS_STRING:
     case JS_CLASS_BOOLEAN:
