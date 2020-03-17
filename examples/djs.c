@@ -42,6 +42,9 @@
 #include "cutils.h"
 #include "quickjs.h"
 
+static int in_argc;
+static char **in_argv;
+
 static JSValue js_print(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv)
 {
@@ -202,6 +205,15 @@ static JSValue js_getFile(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+static JSValue js_exit(JSContext *ctx, JSValueConst this_val,
+                             int argc, JSValueConst *argv)
+{
+    int status;
+    JS_ToInt32(ctx, &status, argv[0]);
+    exit(status);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_evalScriptContext(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv);
 
@@ -235,6 +247,8 @@ static void js_std_add_helpers(JSContext *ctx, int argc, char **argv)
                       JS_NewCFunction(ctx, js_evalScriptContext, "__evalScriptContext", 1));
     JS_SetPropertyStr(ctx, global_obj, "__getFile",
                       JS_NewCFunction(ctx, js_getFile, "__getFile", 1));
+    JS_SetPropertyStr(ctx, global_obj, "__exit",
+                      JS_NewCFunction(ctx, js_exit, "__exit", 1));
     
     JS_FreeValue(ctx, global_obj);
 }
@@ -265,35 +279,43 @@ void js_std_loop(JSContext *ctx)
 static JSValue js_evalScriptContext(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv) 
 {
+    int i;
     const char *script;
     JSValue ret, new_ret;
     JSContext *new_ctx;
     size_t buf_len;
     
-    script = JS_ToCStringLen(ctx, &buf_len, argv[0]);
-    if (!script) {
-        JS_ThrowInternalError(ctx, "could not allocate new context");
-        return JS_EXCEPTION;
-    }
-
+    ret = JS_UNDEFINED;
     new_ctx = JS_NewContext(JS_GetRuntime(ctx));
     if (!new_ctx) {
-        return JS_EXCEPTION;;
+        return JS_EXCEPTION;
     }
-    js_std_add_helpers(new_ctx, 0, NULL);
-    ret = JS_UNDEFINED;
-    new_ret = JS_Eval(new_ctx, script, buf_len, "<script>", JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(new_ret)) {
-        JSValue err = JS_GetException(new_ctx);
-        const char *stack = JS_ToCString(ctx, err);
-        ret = JS_ThrowTypeError(ctx, "%s", stack);
-        JS_FreeCString(ctx, stack);
-        JS_FreeValue(ctx, err);
-    }
-    JS_FreeValue(new_ctx, new_ret);
-    JS_FreeContext(new_ctx);
+    
+    js_std_add_helpers(new_ctx, in_argc, in_argv);
+    
+    for (i = 0; i < argc; i++) {
+        script = JS_ToCStringLen(ctx, &buf_len, argv[i]);
+        if (!script) {
+            JS_ThrowInternalError(ctx, "could not allocate new context");
+            return JS_EXCEPTION;
+        }
+        new_ret = JS_Eval(new_ctx, script, buf_len, "<script>", JS_EVAL_TYPE_GLOBAL);
+        JS_FreeCString(ctx, script);
 
-    JS_FreeCString(ctx, script);
+        if (JS_IsException(new_ret)) {
+            JSValue err = JS_GetException(new_ctx);
+            const char *stack = JS_ToCString(ctx, err);
+            ret = JS_ThrowTypeError(ctx, "%s", stack);
+            JS_FreeCString(ctx, stack);
+            JS_FreeValue(ctx, err);
+            JS_FreeValue(new_ctx, new_ret);
+            break;
+        }
+
+        JS_FreeValue(new_ctx, new_ret);
+    }
+    
+    JS_FreeContext(new_ctx);
 
     return ret;
 }
@@ -524,6 +546,9 @@ int main(int argc, char **argv)
     size_t memory_limit = 0;
     char *include_list[32];
     int i, include_count = 0;
+
+    in_argc = 0;
+    in_argv = NULL;
     
     /* cannot use getopt because we want to pass the command line to
        the script */
@@ -623,6 +648,8 @@ int main(int argc, char **argv)
     
     if (!empty_run) {
         js_std_add_helpers(ctx, argc - optind, argv + optind);
+        in_argc = argc - optind;
+        in_argv = argv + optind;
 
         for(i = 0; i < include_count; i++) {
             if (eval_file(ctx, include_list[i]))
