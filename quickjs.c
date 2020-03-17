@@ -7979,53 +7979,20 @@ void *JS_GetOpaque2(JSContext *ctx, JSValueConst obj, JSClassID class_id)
 #define HINT_STRING  0
 #define HINT_NUMBER  1
 #define HINT_NONE    2
-/* don't try Symbol.toPrimitive */
-#define HINT_FORCE_ORDINARY (1 << 4)
 
 static JSValue JS_ToPrimitiveFree(JSContext *ctx, JSValue val, int hint)
 {
     int i;
-    BOOL force_ordinary;
-
     JSAtom method_name;
     JSValue method, ret;
+
     if (JS_VALUE_GET_TAG(val) != JS_TAG_OBJECT)
         return val;
-    force_ordinary = hint & HINT_FORCE_ORDINARY;
-    hint &= ~HINT_FORCE_ORDINARY;
-    if (!force_ordinary) {
-        method = JS_GetProperty(ctx, val, JS_ATOM_Symbol_toPrimitive);
-        if (JS_IsException(method))
-            goto exception;
-        /* ECMA says *If exoticToPrim is not undefined* but tests in
-           test262 use null as a non callable converter */
-        if (!JS_IsUndefined(method) && !JS_IsNull(method)) {
-            JSAtom atom;
-            JSValue arg;
-            switch(hint) {
-            case HINT_STRING:
-                atom = JS_ATOM_string;
-                break;
-            case HINT_NUMBER:
-                atom = JS_ATOM_number;
-                break;
-            default:
-            case HINT_NONE:
-                atom = JS_ATOM_default;
-                break;
-            }
-            arg = JS_AtomToString(ctx, atom);
-            ret = JS_CallFree(ctx, method, val, 1, (JSValueConst *)&arg);
-            JS_FreeValue(ctx, arg);
-            if (JS_IsException(ret))
-                goto exception;
-            JS_FreeValue(ctx, val);
-            if (JS_VALUE_GET_TAG(ret) != JS_TAG_OBJECT)
-                return ret;
-            JS_FreeValue(ctx, ret);
-            return JS_ThrowTypeError(ctx, "toPrimitive");
-        }
+
+    if (hint == HINT_NONE) {
+        hint = (JS_VALUE_GET_OBJ(val)->class_id == JS_CLASS_DATE) ? HINT_STRING : HINT_NUMBER;
     }
+
     if (hint != HINT_STRING)
         hint = HINT_NUMBER;
     for(i = 0; i < 2; i++) {
@@ -24862,7 +24829,7 @@ static JSValue js_array_every(JSContext *ctx, JSValueConst this_val,
             val = JS_UNDEFINED;
         }
     }
-    
+
 done:
     JS_FreeValue(ctx, val);
     JS_FreeValue(ctx, obj);
