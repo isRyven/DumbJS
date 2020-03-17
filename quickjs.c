@@ -25592,6 +25592,7 @@ static const JSCFunctionListEntry js_array_proto_funcs[] = {
     JS_CFUNC_DEF("lastIndexOf", 1, js_array_lastIndexOf ),
     JS_CFUNC_MAGIC_DEF("join", 1, js_array_join, 0 ),
     JS_CFUNC_DEF("toString", 0, js_array_toString ),
+    JS_CFUNC_MAGIC_DEF("toLocaleString", 0, js_array_join, 1 ),
     JS_CFUNC_MAGIC_DEF("pop", 0, js_array_pop, 0 ),
     JS_CFUNC_MAGIC_DEF("push", 1, js_array_push, 0 ),
     JS_CFUNC_MAGIC_DEF("shift", 0, js_array_pop, 1 ),
