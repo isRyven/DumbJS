@@ -11,7 +11,7 @@ pool:
 steps:
 - script: |
     mkdir build && cd build
-    cmake .. -DCMAKE_BUILD_TYPE=Release -DDUMBJS_EXAMPLES=ON
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DEXAMPLES=ON
     make
   displayName: 'Build'
 
