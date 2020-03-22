@@ -747,28 +747,30 @@ int main(int argc, char **argv)
             help();
             exit(0);
         } else if (precomile) {
-            filename = argv[optind];
-            if (!compile_file(ctx, filename, &output, &output_size)) {
-                int writen;
-                char outpath[MAX_OSPATH] = { 0 };
-                sprintf(outpath, "./%s.jsbin", get_basename(filename, 1));
-                FILE *f = fopen(outpath, "wb");
-                if (!f) {
-                    perror(filename);
+            for (i = optind; i < argc; i++) {
+                filename = argv[i];
+                if (!compile_file(ctx, filename, &output, &output_size)) {
+                    int writen;
+                    char outpath[MAX_OSPATH] = { 0 };
+                    sprintf(outpath, "./%s.jsbin", get_basename(filename, 1));
+                    FILE *f = fopen(outpath, "wb");
+                    if (!f) {
+                        perror(filename);
+                        js_free(ctx, output);
+                        goto fail;
+                    }
+                    writen = fwrite(output, 1, output_size, f);
+                    if (writen != output_size) {
+                        perror(filename);
+                        js_free(ctx, output);
+                        goto fail;
+                    }
+                    fclose(f);
                     js_free(ctx, output);
+                } else {
+                    printf("could not precompile script\n");
                     goto fail;
                 }
-                writen = fwrite(output, 1, output_size, f);
-                if (writen != output_size) {
-                    perror(filename);
-                    js_free(ctx, output);
-                    goto fail;
-                }
-                fclose(f);
-                js_free(ctx, output);
-            } else {
-                printf("could not precompile script\n");
-                goto fail;
             }
         } else if (force_loadbin) {
 loadbin:
