@@ -44,6 +44,41 @@
 static int in_argc;
 static char **in_argv;
 
+#if defined(WIN32) || defined(_WIN32) || defined __CYGWIN__
+  #define PATH_SEPARATOR '\\' 
+#else 
+  #define PATH_SEPARATOR '/'
+#endif
+#define MAX_OSPATH 256
+#define ISPATHSEP(X) ((X) == '\\' || (X) == '/' || (X) == PATH_SEPARATOR)
+
+const char* get_basename(const char *path, int stripExt)
+{
+    static char base[MAX_OSPATH] = { 0 };
+    int length = (int)strlen(path) - 1;
+    // skip trailing slashes
+    while (length > 0 && (ISPATHSEP(path[length]))) 
+        length--;
+    while (length > 0 && !(ISPATHSEP(path[length - 1])))
+        length--;
+    strncpy(base, &path[length], MAX_OSPATH);
+    length = strlen(base) - 1;
+    // strip trailing slashes
+    while (length > 0 && (ISPATHSEP(base[length])))
+        base[length--] = '\0';
+    if (stripExt) {
+        char *ext = strrchr(base, '.');
+        *ext = 0;
+    }
+    return base;
+}
+
+static const char *get_filename_ext(const char *filename) {
+    const char *dot = strrchr(filename, '.');
+    if(!dot || dot == filename) return "";
+    return dot + 1;
+}
+
 static JSValue js_print(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv)
 {
@@ -367,6 +402,37 @@ static int eval_file(JSContext *ctx, const char *filename)
     return ret;
 }
 
+static int compile_file(JSContext *ctx, const char *filename, uint8_t **output, size_t *output_size)
+{
+    uint8_t *buf;
+    int ret, eval_flags;
+    size_t buf_len;
+    JSValue obj;
+    
+    buf = js_load_file(ctx, &buf_len, filename);
+    if (!buf) {
+        perror(filename);
+        exit(1);
+    }
+
+    eval_flags = JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY;
+    obj = JS_Eval(ctx, (const char*)buf, buf_len, filename, eval_flags);
+    if (JS_IsException(obj)) {
+        js_std_dump_error(ctx);
+        ret = -1;
+    } else {
+        ret = 0;
+    }
+    *output = JS_WriteObject(ctx, output_size, obj, JS_WRITE_OBJ_BYTECODE);
+    if (!*output) {
+        js_std_dump_error(ctx);
+        ret = 0;
+    }
+    JS_FreeValue(ctx, obj);
+    js_free(ctx, buf);
+    return ret;
+}
+
 #if defined(__APPLE__)
 #define MALLOC_OVERHEAD  0
 #else
@@ -523,6 +589,8 @@ void help(void)
     printf("DumbJS version " CONFIG_VERSION "\n"
            "usage: " PROG_NAME " [options] [file [args]]\n"
            "-h  --help         list options\n"
+           "-c  --compile      precompile script\n"
+           "-b  --binary       load precompiled script\n" 
            "-e  --eval EXPR    evaluate EXPR\n"
            "-I  --include file include an additional file\n"
            "-T  --trace        trace memory allocation\n"
@@ -545,6 +613,14 @@ int main(int argc, char **argv)
     size_t memory_limit = 0;
     char *include_list[32];
     int i, include_count = 0;
+    int precomile = 0;
+    int force_loadbin = 0;
+    uint8_t *output;
+    size_t output_size;
+    const char *filename;
+    uint8_t *buf;
+    size_t buf_len;
+    JSValue obj, val;
 
     in_argc = 0;
     in_argv = NULL;
@@ -596,6 +672,14 @@ int main(int argc, char **argv)
                     exit(1);
                 }
                 include_list[include_count++] = argv[optind++];
+                continue;
+            }
+            if (opt == 'c' || !strcmp(longopt, "compile")) {
+                precomile++;
+                continue;
+            }
+            if (opt == 'b') {
+                force_loadbin++;
                 continue;
             }
             if (opt == 'd' || !strcmp(longopt, "dump")) {
@@ -662,9 +746,55 @@ int main(int argc, char **argv)
         if (optind >= argc) {
             help();
             exit(0);
-        } else {
-            const char *filename;
+        } else if (precomile) {
             filename = argv[optind];
+            if (!compile_file(ctx, filename, &output, &output_size)) {
+                int writen;
+                char outpath[MAX_OSPATH] = { 0 };
+                sprintf(outpath, "./%s.jsbin", get_basename(filename, 1));
+                FILE *f = fopen(outpath, "wb");
+                if (!f) {
+                    perror(filename);
+                    js_free(ctx, output);
+                    goto fail;
+                }
+                writen = fwrite(output, 1, output_size, f);
+                if (writen != output_size) {
+                    perror(filename);
+                    js_free(ctx, output);
+                    goto fail;
+                }
+                fclose(f);
+                js_free(ctx, output);
+            } else {
+                printf("could not precompile script\n");
+                goto fail;
+            }
+        } else if (force_loadbin) {
+loadbin:
+            filename = argv[optind];
+            buf = js_load_file(ctx, &buf_len, filename);
+            if (!buf) {
+                perror(filename);
+                goto fail;
+            }
+            obj = JS_ReadObject(ctx, buf, buf_len, JS_READ_OBJ_BYTECODE);
+            if (JS_IsException(obj))
+                goto exception;
+            val = JS_EvalFunction(ctx, obj);
+            if (JS_IsException(val)) {
+            exception:
+                js_std_dump_error(ctx);
+                js_free(ctx, buf);
+                goto fail;
+            }
+            JS_FreeValue(ctx, val);
+            js_free(ctx, buf);
+        } else {
+            filename = argv[optind];
+            if (strcmp(get_filename_ext(filename), "jsbin") == 0) {
+                goto loadbin;
+            } 
             if (eval_file(ctx, filename))
                 goto fail;
         }
