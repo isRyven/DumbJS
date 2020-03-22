@@ -36,6 +36,7 @@ if (NOT MSVC)
 endif()
 target_link_libraries(dumbjs dumbjs_h)
 
+
 if(EXAMPLES AND (PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR))
 	message(STATUS "Building DumbJS Examples")
 	add_subdirectory(examples)
