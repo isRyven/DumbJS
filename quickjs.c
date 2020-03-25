@@ -21720,6 +21720,8 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
             js_mode |= JS_MODE_STRICT;
         if (flags & JS_EVAL_FLAG_STRIP)
             js_mode |= JS_MODE_STRIP;
+        if (flags & JS_EVAL_TYPE_MODULE)
+            js_mode |= JS_MODE_STRICT;
     }
     fd = js_new_function_def(ctx, NULL, TRUE, FALSE, filename, 1);
     if (!fd)
@@ -21803,7 +21805,7 @@ JSValue JS_Eval(JSContext *ctx, const char *input, size_t input_len,
     int eval_type = eval_flags & JS_EVAL_TYPE_MASK;
     JSValue ret;
 
-    assert(eval_type == JS_EVAL_TYPE_GLOBAL);
+    assert(eval_type == JS_EVAL_TYPE_GLOBAL || eval_type == JS_EVAL_TYPE_MODULE);
     ret = JS_EvalInternal(ctx, ctx->global_obj, input, input_len, filename,
                           eval_flags, -1);
     return ret;
