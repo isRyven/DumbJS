@@ -402,7 +402,7 @@ static int eval_file(JSContext *ctx, const char *filename)
     return ret;
 }
 
-static int compile_file(JSContext *ctx, const char *filename, uint8_t **output, size_t *output_size)
+static int compile_file(JSContext *ctx, const char *filename, uint8_t **output, size_t *output_size, int as_module)
 {
     uint8_t *buf;
     int ret, eval_flags;
@@ -414,8 +414,11 @@ static int compile_file(JSContext *ctx, const char *filename, uint8_t **output, 
         perror(filename);
         exit(1);
     }
-
-    eval_flags = JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY;
+    if (as_module) {
+        eval_flags = JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY;
+    } else {
+        eval_flags = JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY;
+    }
     obj = JS_Eval(ctx, (const char*)buf, buf_len, filename, eval_flags);
     if (JS_IsException(obj)) {
         js_std_dump_error(ctx);
@@ -590,6 +593,7 @@ void help(void)
            "usage: " PROG_NAME " [options] [file [args]]\n"
            "-h  --help         list options\n"
            "-c  --compile      precompile script\n"
+           "-cm --compile-mod  precompile script as module scoped\n"
            "-b  --binary       load precompiled script\n" 
            "-e  --eval EXPR    evaluate EXPR\n"
            "-I  --include file include an additional file\n"
@@ -614,6 +618,7 @@ int main(int argc, char **argv)
     char *include_list[32];
     int i, include_count = 0;
     int precomile = 0;
+    int as_mod = 0;
     int force_loadbin = 0;
     uint8_t *output;
     size_t output_size;
@@ -674,8 +679,11 @@ int main(int argc, char **argv)
                 include_list[include_count++] = argv[optind++];
                 continue;
             }
-            if (opt == 'c' || !strcmp(longopt, "compile")) {
+            if (opt == 'c' || !strncmp(longopt, "compile", 7)) {
                 precomile++;
+                if ((*arg == 'm' && arg++) || !strcmp(longopt, "compile-mod")) {
+                    as_mod++;
+                }
                 continue;
             }
             if (opt == 'b') {
@@ -749,7 +757,7 @@ int main(int argc, char **argv)
         } else if (precomile) {
             for (i = optind; i < argc; i++) {
                 filename = argv[i];
-                if (!compile_file(ctx, filename, &output, &output_size)) {
+                if (!compile_file(ctx, filename, &output, &output_size, as_mod)) {
                     int writen;
                     char outpath[MAX_OSPATH] = { 0 };
                     sprintf(outpath, "./%s.jsbin", get_basename(filename, 1));
