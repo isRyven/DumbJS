@@ -3,7 +3,7 @@ project(dumbjs VERSION 0.1.0 LANGUAGES C)
 
 option(EXAMPLES "Build DumbJS Examples" OFF)
 
-if (MSVC)
+if(MSVC)
 	# set(RELEASE_FLAGS "/MP /O2 /sdl /W3 /Ot /Gm- /GS /GL /Gy /WX- /Zc:forScope /Gd /Oi /MD")
 	# if (CMAKE_BUILD_TYPE MATCHES RelWithDebInfo)
 		# set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${RELEASE_FLAGS}")
@@ -36,8 +36,7 @@ if (NOT MSVC)
 endif()
 target_link_libraries(dumbjs dumbjs_h)
 
-
-if(EXAMPLES AND (PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR))
+if(EXAMPLES)
 	message(STATUS "Building DumbJS Examples")
 	add_subdirectory(examples)
 endif()
