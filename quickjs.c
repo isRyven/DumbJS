@@ -23881,6 +23881,7 @@ static JSValue js_object_toString(JSContext *ctx, JSValueConst this_val,
         } else {
             p = JS_VALUE_GET_OBJ(obj);
             switch(p->class_id) {
+            default:
             case JS_CLASS_STRING:
             case JS_CLASS_ARGUMENTS:
             case JS_CLASS_MAPPED_ARGUMENTS:
@@ -23896,9 +23897,6 @@ static JSValue js_object_toString(JSContext *ctx, JSValueConst this_val,
                 break;
             case JS_CLASS_JSON:
                 atom = JS_ATOM_JSON;
-                break;
-            default:
-                atom = JS_ATOM_Object;
                 break;
             }
         }
