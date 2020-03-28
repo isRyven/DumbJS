@@ -21802,7 +21802,7 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
             js_mode |= JS_MODE_STRICT;
         if (flags & JS_EVAL_FLAG_STRIP)
             js_mode |= JS_MODE_STRIP;
-        if (flags & JS_EVAL_TYPE_MODULE)
+        if (eval_type == JS_EVAL_TYPE_MODULE)
             js_mode |= JS_MODE_STRICT;
     }
     fd = js_new_function_def(ctx, NULL, TRUE, FALSE, filename, 1);
