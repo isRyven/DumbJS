@@ -740,6 +740,7 @@ JSValue JS_CallConstructor2(JSContext *ctx, JSValueConst func_obj,
 JSValue JS_Eval(JSContext *ctx, const char *input, size_t input_len,
                 const char *filename, int eval_flags);
 JSValue JS_EvalFunction(JSContext *ctx, JSValue fun_obj);
+JSValue JS_EvalFunction2(JSContext *ctx, JSValue fun_obj, JSValue local_var_obj);
 JSValue JS_GetGlobalObject(JSContext *ctx);
 int JS_IsInstanceOf(JSContext *ctx, JSValueConst val, JSValueConst obj);
 int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,

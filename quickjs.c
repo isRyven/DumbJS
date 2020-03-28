@@ -573,6 +573,7 @@ struct JSObject {
             struct JSFunctionBytecode *function_bytecode;
             JSVarRef **var_refs;
             JSObject *home_object; /* for 'super' access */
+            JSValue shadow_global_obj;
         } func;
         struct { /* JS_CLASS_C_FUNCTION: 8/12 bytes */
             JSCFunctionType c_function;
@@ -4264,6 +4265,7 @@ static void js_bytecode_function_finalizer(JSRuntime *rt, JSValue val)
     if (p1) {
         JS_FreeValueRT(rt, JS_MKPTR(JS_TAG_OBJECT, p1));
     }
+    JS_FreeValueRT(rt, p->u.func.shadow_global_obj);
     b = p->u.func.function_bytecode;
     if (b) {
         var_refs = p->u.func.var_refs;
@@ -4287,6 +4289,9 @@ static void js_bytecode_function_mark(JSRuntime *rt, JSValueConst val,
     if (p->u.func.home_object) {
         JS_MarkValue(rt, JS_MKPTR(JS_TAG_OBJECT, p->u.func.home_object),
                      mark_func);
+    }
+    if (JS_IsObject(p->u.func.shadow_global_obj)) {
+        JS_MarkValue(rt, p->u.func.shadow_global_obj, mark_func);
     }
     if (b) {
         if (var_refs) {
@@ -4380,6 +4385,7 @@ static void free_object(JSRuntime *rt, JSObject *p)
     p->u.opaque = NULL;
     p->u.func.var_refs = NULL;
     p->u.func.home_object = NULL;
+    p->u.func.shadow_global_obj = JS_UNDEFINED;
 
     remove_gc_object(&p->header);
     if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES && p->header.ref_count != 0) {
@@ -7725,13 +7731,20 @@ static int JS_DefineGlobalFunction(JSContext *ctx, JSAtom prop,
     return 0;
 }
 
-static JSValue JS_GetGlobalVar(JSContext *ctx, JSAtom prop,
-                               BOOL throw_ref_error)
+static JSValue JS_GetGlobalVar(JSContext *ctx, JSValue shadow_global_obj, 
+                               JSAtom prop, BOOL throw_ref_error)
 {
     JSObject *p;
     JSShapeProperty *prs;
     JSProperty *pr;
 
+    if (unlikely(JS_IsObject(shadow_global_obj))) {
+        if (find_own_property(&pr, JS_VALUE_GET_OBJ(shadow_global_obj), prop)) {
+            if (unlikely(JS_IsUninitialized(pr->u.value)))
+                return JS_UNDEFINED;
+            return JS_DupValue(ctx, pr->u.value);
+        }
+    }
     /* no exotic behavior is possible in global_var_obj */
     p = JS_VALUE_GET_OBJ(ctx->global_var_obj);
     prs = find_own_property(&pr, p, prop);
@@ -7783,12 +7796,17 @@ static int JS_GetGlobalVarRef(JSContext *ctx, JSAtom prop, JSValue *sp)
 }
 
 /* use for strict variable access: test if the variable exists */
-static int JS_CheckGlobalVar(JSContext *ctx, JSAtom prop)
+static int JS_CheckGlobalVar(JSContext *ctx, JSValue shadow_global_obj, JSAtom prop)
 {
     JSObject *p;
     JSShapeProperty *prs;
     int ret;
 
+    if (unlikely(JS_IsObject(shadow_global_obj))) {
+        if (find_own_property1(JS_VALUE_GET_OBJ(shadow_global_obj), prop)) {
+            return 1;
+        }
+    }
     /* no exotic behavior is possible in global_var_obj */
     p = JS_VALUE_GET_OBJ(ctx->global_var_obj);
     prs = find_own_property1(p, prop);
@@ -7806,14 +7824,27 @@ static int JS_CheckGlobalVar(JSContext *ctx, JSAtom prop)
    flag = 1: initialize lexical variable
    flag = 2: normal variable write, strict check was done before
 */
-static int JS_SetGlobalVar(JSContext *ctx, JSAtom prop, JSValue val,
-                           int flag)
+static int JS_SetGlobalVar(JSContext *ctx, JSValue shadow_global_obj,
+                           JSAtom prop, JSValue val, int flag)
 {
     JSObject *p;
     JSShapeProperty *prs;
     JSProperty *pr;
     int flags;
 
+    if (unlikely(JS_IsObject(shadow_global_obj))) {
+        prs = find_own_property(&pr, JS_VALUE_GET_OBJ(shadow_global_obj), prop); 
+        if (prs) {
+            if (unlikely(JS_IsUninitialized(pr->u.value))) {
+                return -1;
+            }
+            if (unlikely(!(prs->flags & JS_PROP_WRITABLE))) {
+                return -1;
+            }
+            set_value(ctx, &pr->u.value, val);
+            return 0;
+        }
+    }
     /* no exotic behavior is possible in global_var_obj */
     p = JS_VALUE_GET_OBJ(ctx->global_var_obj);
     prs = find_own_property(&pr, p, prop);
@@ -10508,6 +10539,7 @@ static JSValue js_closure2(JSContext *ctx, JSValue func_obj,
     p = JS_VALUE_GET_OBJ(func_obj);
     p->u.func.function_bytecode = b;
     p->u.func.home_object = NULL;
+    p->u.func.shadow_global_obj = JS_UNDEFINED;
     p->u.func.var_refs = NULL;
     if (b->closure_var_count) {
         var_refs = js_mallocz(ctx, sizeof(var_refs[0]) * b->closure_var_count);
@@ -10965,6 +10997,11 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
             *sp++ = js_closure(ctx, JS_DupValue(ctx, b->cpool[*pc++]), var_refs, sf);
             if (unlikely(JS_IsException(sp[-1])))
                 goto exception;
+            /* propagate shadow global object */
+            if (JS_IsObject(p->u.func.shadow_global_obj)) {
+                JSObject *func = JS_VALUE_GET_OBJ(*(sp - 1));
+                func->u.func.shadow_global_obj = JS_DupValue(ctx, p->u.func.shadow_global_obj);
+            }
             BREAK;
         CASE(OP_push_empty_string):
             *sp++ = JS_AtomToString(ctx, JS_ATOM_empty_string);
@@ -11472,7 +11509,8 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
                 atom = get_u32(pc);
                 pc += 4;
 
-                ret = JS_CheckGlobalVar(ctx, atom);
+                ret = JS_CheckGlobalVar(ctx, p->u.func.shadow_global_obj, atom);
+
                 if (ret < 0)
                     goto exception;
                 *sp++ = JS_NewBool(ctx, ret);
@@ -11486,8 +11524,7 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
                 JSAtom atom;
                 atom = get_u32(pc);
                 pc += 4;
-
-                val = JS_GetGlobalVar(ctx, atom, opcode - OP_get_var_undef);
+                val = JS_GetGlobalVar(ctx, p->u.func.shadow_global_obj, atom, opcode - OP_get_var_undef);
                 if (unlikely(JS_IsException(val)))
                     goto exception;
                 *sp++ = val;
@@ -11502,7 +11539,8 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
                 atom = get_u32(pc);
                 pc += 4;
 
-                ret = JS_SetGlobalVar(ctx, atom, sp[-1], opcode - OP_put_var);
+                ret = JS_SetGlobalVar(ctx, p->u.func.shadow_global_obj, atom, sp[-1], opcode - OP_put_var);
+                
                 sp--;
                 if (unlikely(ret < 0))
                     goto exception;
@@ -11521,7 +11559,9 @@ static JSValue JS_CallInternal(JSContext *ctx, JSValueConst func_obj,
                     JS_ThrowReferenceErrorNotDefined(ctx, atom);
                     goto exception;
                 }
-                ret = JS_SetGlobalVar(ctx, atom, sp[-1], 2);
+
+                ret = JS_SetGlobalVar(ctx, p->u.func.shadow_global_obj, atom, sp[-1], 2);
+
                 sp -= 2;
                 if (unlikely(ret < 0))
                     goto exception;
@@ -21635,17 +21675,19 @@ static void js_parse_init(JSContext *ctx, JSParseState *s,
 }
 
 static JSValue JS_EvalFunctionInternal(JSContext *ctx, JSValue fun_obj,
-                                       JSValueConst this_obj,
+                                       JSValueConst this_obj, JSValue shadow_global_obj,
                                        JSVarRef **var_refs, JSStackFrame *sf)
 {
     JSValue ret_val;
     uint32_t tag;
-
     tag = JS_VALUE_GET_TAG(fun_obj);
-
-
     if (tag == JS_TAG_FUNCTION_BYTECODE) {
         fun_obj = js_closure(ctx, fun_obj, var_refs, sf);
+        if (JS_IsObject(shadow_global_obj)) {
+            JSObject *p;
+            p = JS_VALUE_GET_OBJ(fun_obj);
+            p->u.func.shadow_global_obj = JS_DupValue(ctx, shadow_global_obj);
+        }
         ret_val = JS_CallFree(ctx, fun_obj, this_obj, 0, NULL);
     } else {
         JS_FreeValue(ctx, fun_obj);
@@ -21656,7 +21698,47 @@ static JSValue JS_EvalFunctionInternal(JSContext *ctx, JSValue fun_obj,
 
 JSValue JS_EvalFunction(JSContext *ctx, JSValue fun_obj)
 {
-    return JS_EvalFunctionInternal(ctx, fun_obj, ctx->global_obj, NULL, NULL);
+    return JS_EvalFunctionInternal(ctx, fun_obj, ctx->global_obj, JS_UNDEFINED, NULL, NULL);
+}
+
+static JSValue js_object_assign(JSContext *ctx, JSValueConst this_val,
+                                                   int argc, JSValueConst *argv);
+
+JSValue JS_EvalFunction2(JSContext *ctx, JSValue fun_obj, JSValue shadow_global_obj)
+{
+    JSValue r;
+    JSValue p = JS_NULL;
+    JSValue s = JS_UNDEFINED;
+    JSObject *obj;
+    JSStackFrame *sf = ctx->current_stack_frame;
+
+    /* find previous shadow global object */
+    while ((sf = sf->prev_frame)) {
+        obj = JS_VALUE_GET_OBJ(sf->cur_func);
+        if (obj->class_id != JS_CLASS_BYTECODE_FUNCTION) {
+            continue;
+        }
+        if (JS_IsObject(obj->u.func.shadow_global_obj)) {
+            p = obj->u.func.shadow_global_obj;
+        }
+        break;
+    }
+
+    if (JS_IsObject(shadow_global_obj)) {
+        JSValue args[3];
+        args[0] = JS_NewObjectProto(ctx, JS_NULL);
+        args[1] = p;
+        args[2] = shadow_global_obj;
+        s = js_object_assign(ctx, JS_UNDEFINED, 3, args);
+        JS_FreeValue(ctx, s);
+    } else if (JS_IsObject(p)) {
+        /* duplicate value since we need to free the value after the func call */
+        s = JS_DupValue(ctx, p);
+    }
+
+    r = JS_EvalFunctionInternal(ctx, fun_obj, ctx->global_obj, s, NULL, NULL);
+    JS_FreeValue(ctx, s);
+    return r;
 }
 
 static void skip_shebang(JSParseState *s)
@@ -21762,7 +21844,7 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
     if (flags & JS_EVAL_FLAG_COMPILE_ONLY) {
         ret_val = fun_obj;
     } else {
-        ret_val = JS_EvalFunctionInternal(ctx, fun_obj, this_obj, var_refs, sf);
+        ret_val = JS_EvalFunctionInternal(ctx, fun_obj, this_obj, JS_UNDEFINED, var_refs, sf);
     }
     return ret_val;
  fail1:
@@ -23912,6 +23994,34 @@ static JSValue js_object_toLocaleString(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv)
 {
     return JS_Invoke(ctx, this_val, JS_ATOM_toString, 0, NULL);
+}
+
+static JSValue js_object_assign(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
+{
+    // Object.assign(obj, source1)
+    JSValue obj, s;
+    int i;
+
+    s = JS_UNDEFINED;
+    obj = JS_ToObject(ctx, argv[0]);
+    if (JS_IsException(obj))
+        goto exception;
+    for (i = 1; i < argc; i++) {
+        if (!JS_IsNull(argv[i]) && !JS_IsUndefined(argv[i])) {
+            s = JS_ToObject(ctx, argv[i]);
+            if (JS_IsException(s))
+                goto exception;
+            if (JS_CopyDataProperties(ctx, obj, s, JS_UNDEFINED, TRUE))
+                goto exception;
+            JS_FreeValue(ctx, s);
+        }
+    }
+    return obj;
+exception:
+    JS_FreeValue(ctx, obj);
+    JS_FreeValue(ctx, s);
+    return JS_EXCEPTION;
 }
 
 static JSValue js_object_seal(JSContext *ctx, JSValueConst this_val,
