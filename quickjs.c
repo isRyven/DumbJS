@@ -21713,7 +21713,7 @@ JSValue JS_EvalFunction2(JSContext *ctx, JSValue fun_obj, JSValue shadow_global_
     JSStackFrame *sf = ctx->current_stack_frame;
 
     /* find previous shadow global object */
-    while ((sf = sf->prev_frame)) {
+    while (sf && (sf = sf->prev_frame)) {
         obj = JS_VALUE_GET_OBJ(sf->cur_func);
         if (obj->class_id != JS_CLASS_BYTECODE_FUNCTION) {
             continue;
@@ -21731,6 +21731,7 @@ JSValue JS_EvalFunction2(JSContext *ctx, JSValue fun_obj, JSValue shadow_global_
         args[2] = shadow_global_obj;
         s = js_object_assign(ctx, JS_UNDEFINED, 3, args);
         JS_FreeValue(ctx, s);
+        JS_FreeValue(ctx, shadow_global_obj);
     } else if (JS_IsObject(p)) {
         /* duplicate value since we need to free the value after the func call */
         s = JS_DupValue(ctx, p);
